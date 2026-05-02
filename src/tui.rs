@@ -15,6 +15,8 @@ use ratatui::{
 };
 use std::{io, time::Duration};
 
+const TURQUOISE: Color = Color::Rgb(64, 224, 208);
+
 #[derive(Debug, Clone)]
 pub struct ContactsTui {
     page: ContactsPage,
@@ -146,7 +148,7 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
             ),
         ]))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Blue));
+        .border_style(Style::default().fg(TURQUOISE));
     frame.render_widget(shell, area);
 
     let inner = area.inner(Margin {
@@ -196,7 +198,7 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
     )
     .row_highlight_style(
         Style::default()
-            .bg(Color::Blue)
+            .bg(TURQUOISE)
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     )
