@@ -11,11 +11,234 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+    },
 };
 use std::{io, time::Duration};
 
 const TURQUOISE: Color = Color::Rgb(64, 224, 208);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    Contacts,
+    Quit,
+}
+
+#[derive(Debug, Clone)]
+pub struct MainMenuTui {
+    account_name: String,
+    app_description: String,
+    state: ListState,
+    status: String,
+}
+
+impl MainMenuTui {
+    pub fn new(account_name: impl Into<String>, app_description: impl Into<String>) -> Self {
+        let mut state = ListState::default();
+        state.select(Some(0));
+
+        Self {
+            account_name: account_name.into(),
+            app_description: app_description.into(),
+            state,
+            status: "Choose a section to open.".to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn selected_index(&self) -> Option<usize> {
+        self.state.selected()
+    }
+
+    pub fn next(&mut self) {
+        let index = match self.state.selected() {
+            Some(index) if index + 1 < menu_items().len() => index + 1,
+            _ => 0,
+        };
+        self.state.select(Some(index));
+    }
+
+    pub fn previous(&mut self) {
+        let index = match self.state.selected() {
+            Some(0) | None => menu_items().len() - 1,
+            Some(index) => index - 1,
+        };
+        self.state.select(Some(index));
+    }
+
+    pub fn activate(&mut self) -> Option<MenuAction> {
+        match self.state.selected().unwrap_or(0) {
+            0 => {
+                self.status =
+                    "Overview is not implemented yet. Choose Contacts to continue.".to_string();
+                None
+            }
+            1 => Some(MenuAction::Contacts),
+            2 => Some(MenuAction::Quit),
+            _ => None,
+        }
+    }
+}
+
+pub fn run_main_menu_tui(account_name: &str, app_description: &str) -> Result<MenuAction> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = MainMenuTui::new(account_name, app_description);
+    let result = run_main_menu_loop(&mut terminal, &mut app);
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+fn run_main_menu_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut MainMenuTui,
+) -> Result<MenuAction> {
+    loop {
+        terminal.draw(|frame| draw_main_menu(frame, app))?;
+
+        if event::poll(Duration::from_millis(250))? {
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(MenuAction::Quit),
+                KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => app.next(),
+                KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => app.previous(),
+                KeyCode::Enter => {
+                    if let Some(action) = app.activate() {
+                        return Ok(action);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn draw_main_menu(frame: &mut Frame, app: &mut MainMenuTui) {
+    let area = frame.area();
+    let shell = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" Gecko ", Style::default().fg(Color::White)),
+            Span::styled(
+                "enter open | up/down move | q/esc quit",
+                Style::default().fg(Color::Gray),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(TURQUOISE));
+    frame.render_widget(shell, area);
+
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
+        .split(inner);
+
+    let items = menu_items()
+        .iter()
+        .map(|item| {
+            ListItem::new(vec![
+                Line::from(Span::styled(
+                    item.title,
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    item.subtitle,
+                    Style::default().fg(Color::Gray),
+                )),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    let menu = List::new(items)
+        .block(Block::default().title(" Menu ").borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .bg(TURQUOISE)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+    frame.render_stateful_widget(menu, layout[0], &mut app.state);
+
+    let selected = app.state.selected().unwrap_or(0);
+    let item = &menu_items()[selected];
+    let details = vec![
+        Line::from(Span::styled(
+            &app.account_name,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            &app.app_description,
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            item.title,
+            Style::default().fg(TURQUOISE).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(item.description),
+        Line::from(""),
+        Line::from(Span::styled(
+            &app.status,
+            Style::default().fg(Color::Yellow),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(details)
+            .block(Block::default().title(" Details ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        layout[1],
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MenuItem {
+    title: &'static str,
+    subtitle: &'static str,
+    description: &'static str,
+}
+
+fn menu_items() -> &'static [MenuItem] {
+    &[
+        MenuItem {
+            title: "Overview",
+            subtitle: "Dashboard placeholder",
+            description: "The overview screen is reserved for the next dashboard pass.",
+        },
+        MenuItem {
+            title: "Contacts",
+            subtitle: "Browse and select contacts",
+            description: "Open the contacts table, move through rows, and select a contact.",
+        },
+        MenuItem {
+            title: "Quit",
+            subtitle: "Leave the CLI menu",
+            description: "Return to the shell.",
+        },
+    ]
+}
 
 #[derive(Debug, Clone)]
 pub struct ContactsTui {
@@ -284,6 +507,30 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn menu_starts_on_overview_and_moves_with_wraparound() {
+        let mut app = MainMenuTui::new("Stage 281", "Forms");
+
+        assert_eq!(app.selected_index(), Some(0));
+        app.next();
+        assert_eq!(app.selected_index(), Some(1));
+        app.previous();
+        assert_eq!(app.selected_index(), Some(0));
+        app.previous();
+        assert_eq!(app.selected_index(), Some(2));
+    }
+
+    #[test]
+    fn menu_activation_returns_actions_for_contacts_and_quit() {
+        let mut app = MainMenuTui::new("Stage 281", "Forms");
+
+        assert_eq!(app.activate(), None);
+        app.next();
+        assert_eq!(app.activate(), Some(MenuAction::Contacts));
+        app.next();
+        assert_eq!(app.activate(), Some(MenuAction::Quit));
     }
 
     #[test]

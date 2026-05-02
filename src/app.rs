@@ -1,8 +1,7 @@
 use crate::auth::TokenSet;
 use crate::contacts::ContactService;
-use crate::prompt::prompt_index;
 use crate::session::AppSession;
-use crate::tui::run_contacts_tui;
+use crate::tui::{MenuAction, run_contacts_tui, run_main_menu_tui};
 use anyhow::Result;
 
 #[derive(Debug, Clone)]
@@ -13,13 +12,9 @@ pub struct AppMenuOptions {
 }
 
 pub fn run_menu(tokens: &TokenSet, session: &AppSession, options: AppMenuOptions) -> Result<()> {
-    println!("\n{} - {}\n", session.account_name, session.app_description);
-
     loop {
-        println!("{}", render_menu());
-        match prompt_index("Choose menu item: ", 3)? {
-            1 => println!("Overview is not implemented yet.\n"),
-            2 => {
+        match run_main_menu_tui(&session.account_name, &session.app_description)? {
+            MenuAction::Contacts => {
                 let contacts = ContactService::new(&options.app_api_base_url)?.list_contacts(
                     tokens,
                     session,
@@ -33,26 +28,7 @@ pub fn run_menu(tokens: &TokenSet, session: &AppSession, options: AppMenuOptions
                     );
                 }
             }
-            3 => return Ok(()),
-            _ => unreachable!(),
+            MenuAction::Quit => return Ok(()),
         }
-    }
-}
-
-pub fn render_menu() -> &'static str {
-    "Menu:\n  1. Overview\n  2. Contacts\n  3. Quit"
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renders_initial_menu_items() {
-        let rendered = render_menu();
-
-        assert!(rendered.contains("1. Overview"));
-        assert!(rendered.contains("2. Contacts"));
-        assert!(rendered.contains("3. Quit"));
     }
 }
