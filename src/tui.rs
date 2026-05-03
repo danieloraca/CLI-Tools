@@ -430,7 +430,14 @@ fn menu_items() -> &'static [MenuItem] {
 pub struct ContactsTui {
     page: ContactsPage,
     state: TableState,
-    selected: Option<ContactRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContactsAction {
+    Selected(ContactRow),
+    PreviousPage,
+    NextPage,
+    Quit,
 }
 
 impl ContactsTui {
@@ -440,11 +447,7 @@ impl ContactsTui {
             state.select(Some(0));
         }
 
-        Self {
-            page,
-            state,
-            selected: None,
-        }
+        Self { page, state }
     }
 
     pub fn selected_index(&self) -> Option<usize> {
@@ -456,8 +459,12 @@ impl ContactsTui {
             .and_then(|index| self.page.contacts.get(index))
     }
 
-    pub fn take_selected(self) -> Option<ContactRow> {
-        self.selected
+    pub fn can_go_previous(&self) -> bool {
+        self.page.pagination.can_go_previous()
+    }
+
+    pub fn can_go_next(&self) -> bool {
+        self.page.pagination.can_go_next()
     }
 
     pub fn next(&mut self) {
@@ -487,16 +494,12 @@ impl ContactsTui {
         };
         self.state.select(Some(index));
     }
-
-    pub fn select_current(&mut self) {
-        self.selected = self.selected_contact().cloned();
-    }
 }
 
-pub fn run_contacts_tui(page: ContactsPage) -> Result<Option<ContactRow>> {
+pub fn run_contacts_tui(page: ContactsPage) -> Result<ContactsAction> {
     if page.contacts.is_empty() {
         println!("{}", render_contacts_page(&page));
-        return Ok(None);
+        return Ok(ContactsAction::Quit);
     }
 
     enable_raw_mode()?;
@@ -512,14 +515,13 @@ pub fn run_contacts_tui(page: ContactsPage) -> Result<Option<ContactRow>> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    result?;
-    Ok(app.take_selected())
+    result
 }
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ContactsTui,
-) -> Result<()> {
+) -> Result<ContactsAction> {
     loop {
         terminal.draw(|frame| draw_contacts(frame, app))?;
 
@@ -533,12 +535,23 @@ fn run_loop(
             }
 
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(ContactsAction::Quit),
                 KeyCode::Char('j') | KeyCode::Down => app.next(),
                 KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                KeyCode::Char('h') | KeyCode::Char('p') | KeyCode::Left => {
+                    if app.can_go_previous() {
+                        return Ok(ContactsAction::PreviousPage);
+                    }
+                }
+                KeyCode::Char('l') | KeyCode::Char('n') | KeyCode::Right => {
+                    if app.can_go_next() {
+                        return Ok(ContactsAction::NextPage);
+                    }
+                }
                 KeyCode::Enter => {
-                    app.select_current();
-                    return Ok(());
+                    if let Some(contact) = app.selected_contact().cloned() {
+                        return Ok(ContactsAction::Selected(contact));
+                    }
                 }
                 _ => {}
             }
@@ -552,7 +565,7 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
         .title(Line::from(vec![
             Span::styled(" Contacts ", Style::default().fg(Color::White)),
             Span::styled(
-                "q/esc quit | enter select | j/k move",
+                "enter select | up/down move | left/right page | q quit",
                 Style::default().fg(Color::Gray),
             ),
         ]))
@@ -564,10 +577,14 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
         horizontal: 1,
         vertical: 1,
     });
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(3)])
+        .split(inner);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-        .split(inner);
+        .split(vertical[0]);
 
     let rows = app.page.contacts.iter().map(|contact| {
         Row::new(vec![
@@ -598,11 +615,7 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
     )
     .block(
         Block::default()
-            .title(format!(
-                " Contacts page {} ({} shown) ",
-                app.page.page,
-                app.page.contacts.len()
-            ))
+            .title(format!(" Contacts ({} shown) ", app.page.contacts.len()))
             .borders(Borders::ALL),
     )
     .row_highlight_style(
@@ -616,6 +629,51 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
 
     let details = contact_details(app.selected_contact());
     frame.render_widget(details, chunks[1]);
+
+    frame.render_widget(contacts_footer(&app.page), vertical[1]);
+}
+
+fn contacts_footer(page: &ContactsPage) -> Paragraph<'static> {
+    let total_results = page
+        .pagination
+        .total_results
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let total_pages = page
+        .pagination
+        .total_pages
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let previous = if page.pagination.can_go_previous() {
+        "left/p/h previous"
+    } else {
+        "previous unavailable"
+    };
+    let next = if page.pagination.can_go_next() {
+        "right/n/l next"
+    } else {
+        "next unavailable"
+    };
+
+    Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!("Found {total_results} results. "),
+            Style::default().fg(Color::Gray),
+        ),
+        Span::styled(
+            format!("Showing {} per page. ", page.pagination.per_page),
+            Style::default().fg(Color::Gray),
+        ),
+        Span::styled(
+            format!("Page {} of {total_pages}. ", page.pagination.page),
+            Style::default().fg(TURQUOISE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{previous} | {next}"),
+            Style::default().fg(Color::Gray),
+        ),
+    ]))
+    .block(Block::default().borders(Borders::ALL))
 }
 
 fn contact_details(contact: Option<&ContactRow>) -> Paragraph<'static> {
@@ -667,11 +725,16 @@ fn non_empty(value: &str, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contacts::ContactsPagination;
 
     fn contacts_page() -> ContactsPage {
         ContactsPage {
-            page: 1,
-            per_page: 15,
+            pagination: ContactsPagination {
+                page: 1,
+                per_page: 15,
+                total_results: Some(2),
+                total_pages: Some(3),
+            },
             contacts: vec![
                 ContactRow {
                     id: "1".to_string(),
@@ -791,8 +854,15 @@ mod tests {
     fn enter_selects_current_contact() {
         let mut app = ContactsTui::new(contacts_page());
         app.next();
-        app.select_current();
 
-        assert_eq!(app.take_selected().unwrap().id, "2");
+        assert_eq!(app.selected_contact().unwrap().id, "2");
+    }
+
+    #[test]
+    fn contacts_page_reports_pagination_availability() {
+        let app = ContactsTui::new(contacts_page());
+
+        assert!(!app.can_go_previous());
+        assert!(app.can_go_next());
     }
 }

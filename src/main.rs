@@ -321,13 +321,21 @@ fn main() -> Result<()> {
                 .context("session file path was not provided and no home directory was found")?;
             let tokens = auth::load_tokens(&token_file)?;
             let session = session::load_session(&session_file)?;
-            let contacts =
-                contacts::ContactService::new(required_app_api_base_url(app_api_base_url)?)?
-                    .list_contacts(&tokens, &session, page, per_page)?;
+            let app_api_base_url = required_app_api_base_url(app_api_base_url)?;
 
             if plain {
+                let contacts = contacts::ContactService::new(&app_api_base_url)?
+                    .list_contacts(&tokens, &session, page, per_page)?;
                 println!("{}", contacts::render_contacts_page(&contacts));
-            } else if let Some(contact) = tui::run_contacts_tui(contacts)? {
+            } else if let Some(contact) = app::browse_contacts(
+                &tokens,
+                &session,
+                app::AppMenuOptions {
+                    app_api_base_url,
+                    contacts_page: page,
+                    contacts_per_page: per_page,
+                },
+            )? {
                 println!(
                     "Selected contact: {} <{}>",
                     contact.full_name, contact.email

@@ -3,7 +3,7 @@ use crate::auth::TokenSet;
 use crate::session::AppSession;
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone};
-use reqwest::blocking::Client;
+use reqwest::{blocking::Client, header::HeaderMap};
 use serde_json::Value;
 
 const CONTACT_RFIELDS: &str = "field_1,field_2,field_3,field_4,field_5,field_6";
@@ -52,6 +52,7 @@ impl ContactService {
             .context("contacts API request failed")?;
 
         let status = response.status();
+        let headers = response.headers().clone();
         let payload: Value = response.json().with_context(|| {
             format!("contacts API returned non-JSON response with status {status}")
         })?;
@@ -62,15 +63,23 @@ impl ContactService {
             );
         }
 
-        parse_contacts_page(payload, page, per_page)
+        let pagination = ContactsPagination::from_response(&headers, &payload, page, per_page);
+        parse_contacts_page_with_pagination(payload, pagination)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContactsPage {
     pub contacts: Vec<ContactRow>,
+    pub pagination: ContactsPagination,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContactsPagination {
     pub page: u32,
     pub per_page: u32,
+    pub total_results: Option<u64>,
+    pub total_pages: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +93,23 @@ pub struct ContactRow {
     pub labels: Vec<String>,
 }
 
+#[cfg(test)]
 pub fn parse_contacts_page(payload: Value, page: u32, per_page: u32) -> Result<ContactsPage> {
+    parse_contacts_page_with_pagination(
+        payload,
+        ContactsPagination {
+            page,
+            per_page,
+            total_results: None,
+            total_pages: None,
+        },
+    )
+}
+
+pub fn parse_contacts_page_with_pagination(
+    payload: Value,
+    pagination: ContactsPagination,
+) -> Result<ContactsPage> {
     let contacts = contact_items(&payload)
         .context("contacts API response did not include a contacts array")?
         .iter()
@@ -94,14 +119,13 @@ pub fn parse_contacts_page(payload: Value, page: u32, per_page: u32) -> Result<C
 
     Ok(ContactsPage {
         contacts,
-        page,
-        per_page,
+        pagination,
     })
 }
 
 pub fn render_contacts_page(page: &ContactsPage) -> String {
     if page.contacts.is_empty() {
-        return format!("Contacts page {}: no contacts found.", page.page);
+        return format!("Contacts page {}: no contacts found.", page.pagination.page);
     }
 
     let rows = page
@@ -132,6 +156,119 @@ pub fn render_contacts_page(page: &ContactsPage) -> String {
         ],
         &rows,
     )
+}
+
+impl ContactsPagination {
+    fn from_response(
+        headers: &HeaderMap,
+        payload: &Value,
+        fallback_page: u32,
+        fallback_per_page: u32,
+    ) -> Self {
+        let mut pagination = Self::from_headers(headers, fallback_page, fallback_per_page);
+        pagination.apply_body_fallback(payload);
+
+        if pagination.total_pages.is_none() {
+            pagination.total_pages = pagination
+                .total_results
+                .map(|total| total.div_ceil(u64::from(pagination.per_page)) as u32);
+        }
+
+        pagination
+    }
+
+    fn from_headers(headers: &HeaderMap, fallback_page: u32, fallback_per_page: u32) -> Self {
+        Self {
+            page: header_u32(headers, &["current_page", "current-page", "page"])
+                .unwrap_or(fallback_page),
+            per_page: header_u32(headers, &["per_page", "per-page", "perpage"])
+                .unwrap_or(fallback_per_page),
+            total_results: header_u64(
+                headers,
+                &[
+                    "total_results",
+                    "total-results",
+                    "total_items",
+                    "total-items",
+                    "total",
+                ],
+            ),
+            total_pages: header_u32(
+                headers,
+                &["total_pages", "total-pages", "last_page", "last-page"],
+            ),
+        }
+    }
+
+    fn apply_body_fallback(&mut self, payload: &Value) {
+        let sources = [
+            Some(payload),
+            payload.get("pagination"),
+            payload.get("meta"),
+            payload.get("meta").and_then(|meta| meta.get("pagination")),
+        ];
+
+        for source in sources.into_iter().flatten() {
+            self.page =
+                value_u32(source, &["current_page", "currentPage", "page"]).unwrap_or(self.page);
+            self.per_page = value_u32(source, &["per_page", "perPage"]).unwrap_or(self.per_page);
+            self.total_results = self.total_results.or_else(|| {
+                value_u64(
+                    source,
+                    &[
+                        "total_results",
+                        "totalResults",
+                        "total_items",
+                        "totalItems",
+                        "total",
+                    ],
+                )
+            });
+            self.total_pages = self.total_pages.or_else(|| {
+                value_u32(
+                    source,
+                    &["total_pages", "totalPages", "last_page", "lastPage"],
+                )
+            });
+        }
+    }
+
+    pub fn can_go_previous(self) -> bool {
+        self.page > 1
+    }
+
+    pub fn can_go_next(self) -> bool {
+        self.total_pages
+            .map(|total_pages| self.page < total_pages)
+            .unwrap_or(true)
+    }
+}
+
+fn header_u32(headers: &HeaderMap, names: &[&str]) -> Option<u32> {
+    header_u64(headers, names).and_then(|value| u32::try_from(value).ok())
+}
+
+fn header_u64(headers: &HeaderMap, names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+    })
+}
+
+fn value_u32(value: &Value, keys: &[&str]) -> Option<u32> {
+    value_u64(value, keys).and_then(|value| u32::try_from(value).ok())
+}
+
+fn value_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .filter_map(|key| value.get(*key))
+        .find_map(|value| match value {
+            Value::Number(value) => value.as_u64(),
+            Value::String(value) => value.parse().ok(),
+            _ => None,
+        })
 }
 
 impl ContactRow {
@@ -336,6 +473,7 @@ fn api_error(payload: &Value) -> Option<anyhow::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::HeaderValue;
     use serde_json::json;
 
     #[test]
@@ -385,7 +523,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(page.page, 2);
+        assert_eq!(page.pagination.page, 2);
         assert_eq!(page.contacts[0].full_name, "Roger Rabbit");
         assert_eq!(page.contacts[0].created_at, "27th Apr 2026 at 14:11");
     }
@@ -393,8 +531,12 @@ mod tests {
     #[test]
     fn renders_contacts_table() {
         let rendered = render_contacts_page(&ContactsPage {
-            page: 1,
-            per_page: 15,
+            pagination: ContactsPagination {
+                page: 1,
+                per_page: 15,
+                total_results: Some(1),
+                total_pages: Some(1),
+            },
             contacts: vec![ContactRow {
                 id: "1".to_string(),
                 full_name: "Steven Murphy".to_string(),
@@ -410,6 +552,100 @@ mod tests {
         assert!(rendered.contains("Last chat"));
         assert!(rendered.contains("Steven Murphy"));
         assert!(rendered.contains("bigbang"));
+    }
+
+    #[test]
+    fn extracts_pagination_from_response_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("current_page", HeaderValue::from_static("3"));
+        headers.insert("per_page", HeaderValue::from_static("15"));
+        headers.insert("total_results", HeaderValue::from_static("214451"));
+
+        let pagination = ContactsPagination::from_response(&headers, &json!({ "data": [] }), 1, 30);
+
+        assert_eq!(
+            pagination,
+            ContactsPagination {
+                page: 3,
+                per_page: 15,
+                total_results: Some(214451),
+                total_pages: Some(14297),
+            }
+        );
+    }
+
+    #[test]
+    fn extracts_pagination_from_body_metadata() {
+        let pagination = ContactsPagination::from_response(
+            &HeaderMap::new(),
+            &json!({
+                "data": [],
+                "pagination": {
+                    "currentPage": "2",
+                    "perPage": "30",
+                    "totalResults": "214451",
+                    "totalPages": "7149"
+                }
+            }),
+            1,
+            15,
+        );
+
+        assert_eq!(
+            pagination,
+            ContactsPagination {
+                page: 2,
+                per_page: 30,
+                total_results: Some(214451),
+                total_pages: Some(7149),
+            }
+        );
+    }
+
+    #[test]
+    fn extracts_laravel_style_root_pagination() {
+        let pagination = ContactsPagination::from_response(
+            &HeaderMap::new(),
+            &json!({
+                "current_page": 3,
+                "data": [],
+                "from": 31,
+                "last_page": 14297,
+                "per_page": 15,
+                "to": 45,
+                "total": 214451
+            }),
+            1,
+            30,
+        );
+
+        assert_eq!(
+            pagination,
+            ContactsPagination {
+                page: 3,
+                per_page: 15,
+                total_results: Some(214451),
+                total_pages: Some(14297),
+            }
+        );
+    }
+
+    #[test]
+    fn derives_total_pages_from_body_total_results() {
+        let pagination = ContactsPagination::from_response(
+            &HeaderMap::new(),
+            &json!({
+                "data": [],
+                "meta": {
+                    "total_items": 31
+                }
+            }),
+            1,
+            15,
+        );
+
+        assert_eq!(pagination.total_results, Some(31));
+        assert_eq!(pagination.total_pages, Some(3));
     }
 
     #[test]
