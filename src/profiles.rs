@@ -23,7 +23,7 @@ impl Default for ProfileSelectionOptions {
             app: None,
             profile_id: None,
             auto_select_single: false,
-            print_redirect_url: true,
+            print_redirect_url: false,
         }
     }
 }

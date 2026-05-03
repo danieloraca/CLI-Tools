@@ -319,7 +319,7 @@ fn draw_main_menu(frame: &mut Frame, app: &mut MainMenuTui) {
     let area = frame.area();
     let shell = Block::default()
         .title(Line::from(vec![
-            Span::styled(" Gecko ", Style::default().fg(Color::White)),
+            Span::styled(" CLI Tools ", Style::default().fg(Color::White)),
             Span::styled(
                 "enter open | up/down move | q/esc quit",
                 Style::default().fg(Color::Gray),
@@ -550,7 +550,7 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
     let area = frame.area();
     let shell = Block::default()
         .title(Line::from(vec![
-            Span::styled(" Gecko Contacts ", Style::default().fg(Color::White)),
+            Span::styled(" Contacts ", Style::default().fg(Color::White)),
             Span::styled(
                 "q/esc quit | enter select | j/k move",
                 Style::default().fg(Color::Gray),

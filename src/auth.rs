@@ -1,4 +1,4 @@
-use crate::api::{ApiClient, DEFAULT_BASE_URL};
+use crate::api::ApiClient;
 use crate::prompt::{prompt, prompt_secret};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ impl Default for LoginOptions {
             password: None,
             mfa_code: None,
             mfa_method: None,
-            base_url: DEFAULT_BASE_URL.to_string(),
+            base_url: String::new(),
             token_file: default_token_file(),
             print_tokens: false,
         }
@@ -363,12 +363,12 @@ pub fn load_tokens(token_file: &Path) -> Result<TokenSet> {
 
 pub fn default_token_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(".config/gecko/tokens.json"))
+    Some(PathBuf::from(home).join(".config/cli_tools/tokens.json"))
 }
 
 pub fn default_app_token_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(".config/gecko/app_tokens.json"))
+    Some(PathBuf::from(home).join(".config/cli_tools/app_tokens.json"))
 }
 
 #[cfg(test)]
@@ -399,8 +399,7 @@ mod tests {
 
     #[test]
     fn extracts_claim_code_from_redirect_url() {
-        let code = claim_code_from_redirect_url("https://app-stage.geckointernal.com/?code=abc123")
-            .unwrap();
+        let code = claim_code_from_redirect_url("https://app.example.test/?code=abc123").unwrap();
 
         assert_eq!(code, "abc123");
     }

@@ -12,8 +12,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "gecko")]
-#[command(about = "Gecko account CLI")]
+#[command(name = "cli_tools")]
+#[command(about = "CLI Tools")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -40,11 +40,7 @@ enum Commands {
         mfa_method: Option<String>,
 
         /// Account API base URL.
-        #[arg(
-            long,
-            env = "GECKO_ACCOUNT_API_URL",
-            default_value = "https://account-api-stage.geckoengage.com"
-        )]
+        #[arg(long, env = "CLI_TOOLS_ACCOUNT_API_URL", hide_env_values = true)]
         base_url: String,
 
         /// Token output file. Use --no-store to avoid writing tokens.
@@ -80,18 +76,14 @@ enum Commands {
         auto_select_single: bool,
 
         /// App API base URL for post-login menu actions.
-        #[arg(
-            long,
-            env = "GECKO_APP_API_URL",
-            default_value = contacts::DEFAULT_APP_API_URL
-        )]
-        app_api_base_url: String,
+        #[arg(long, env = "CLI_TOOLS_APP_API_URL", hide_env_values = true)]
+        app_api_base_url: Option<String>,
 
         /// Selected profile session output file.
         #[arg(long)]
         session_file: Option<PathBuf>,
 
-        /// App-scoped token output file used for Geckoform API calls.
+        /// App-scoped token output file used for app API calls.
         #[arg(long)]
         app_token_file: Option<PathBuf>,
 
@@ -103,11 +95,7 @@ enum Commands {
     /// List/select profiles using the saved login token.
     Profiles {
         /// Account API base URL.
-        #[arg(
-            long,
-            env = "GECKO_ACCOUNT_API_URL",
-            default_value = "https://account-api-stage.geckoengage.com"
-        )]
+        #[arg(long, env = "CLI_TOOLS_ACCOUNT_API_URL", hide_env_values = true)]
         base_url: String,
 
         /// Token file to read.
@@ -131,18 +119,14 @@ enum Commands {
         auto_select_single: bool,
 
         /// App API base URL for post-login menu actions.
-        #[arg(
-            long,
-            env = "GECKO_APP_API_URL",
-            default_value = contacts::DEFAULT_APP_API_URL
-        )]
-        app_api_base_url: String,
+        #[arg(long, env = "CLI_TOOLS_APP_API_URL", hide_env_values = true)]
+        app_api_base_url: Option<String>,
 
         /// Selected profile session output file.
         #[arg(long)]
         session_file: Option<PathBuf>,
 
-        /// App-scoped token output file used for Geckoform API calls.
+        /// App-scoped token output file used for app API calls.
         #[arg(long)]
         app_token_file: Option<PathBuf>,
 
@@ -154,12 +138,8 @@ enum Commands {
     /// Show contacts for the saved selected profile.
     Contacts {
         /// App API base URL.
-        #[arg(
-            long,
-            env = "GECKO_APP_API_URL",
-            default_value = contacts::DEFAULT_APP_API_URL
-        )]
-        app_api_base_url: String,
+        #[arg(long, env = "CLI_TOOLS_APP_API_URL", hide_env_values = true)]
+        app_api_base_url: Option<String>,
 
         /// App-scoped token file to read. Deprecated alias for --app-token-file.
         #[arg(long)]
@@ -188,6 +168,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
     match cli.command {
@@ -263,7 +244,7 @@ fn main() -> Result<()> {
                         &app_tokens,
                         &session,
                         app::AppMenuOptions {
-                            app_api_base_url,
+                            app_api_base_url: required_app_api_base_url(app_api_base_url)?,
                             contacts_page: 1,
                             contacts_per_page: 15,
                         },
@@ -315,7 +296,7 @@ fn main() -> Result<()> {
                     &app_tokens,
                     &session,
                     app::AppMenuOptions {
-                        app_api_base_url,
+                        app_api_base_url: required_app_api_base_url(app_api_base_url)?,
                         contacts_page: 1,
                         contacts_per_page: 15,
                     },
@@ -340,8 +321,9 @@ fn main() -> Result<()> {
                 .context("session file path was not provided and no home directory was found")?;
             let tokens = auth::load_tokens(&token_file)?;
             let session = session::load_session(&session_file)?;
-            let contacts = contacts::ContactService::new(app_api_base_url)?
-                .list_contacts(&tokens, &session, page, per_page)?;
+            let contacts =
+                contacts::ContactService::new(required_app_api_base_url(app_api_base_url)?)?
+                    .list_contacts(&tokens, &session, page, per_page)?;
 
             if plain {
                 println!("{}", contacts::render_contacts_page(&contacts));
@@ -355,4 +337,10 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn required_app_api_base_url(value: Option<String>) -> Result<String> {
+    value.context(
+        "app API base URL was not provided; set CLI_TOOLS_APP_API_URL or pass --app-api-base-url",
+    )
 }

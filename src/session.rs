@@ -39,7 +39,7 @@ pub fn load_session(session_file: &Path) -> Result<AppSession> {
 
 pub fn default_session_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(".config/gecko/session.json"))
+    Some(PathBuf::from(home).join(".config/cli_tools/session.json"))
 }
 
 #[cfg(test)]

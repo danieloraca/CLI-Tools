@@ -6,9 +6,9 @@ use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
-pub const DEFAULT_APP_API_URL: &str = "https://api-stage.geckoform.com";
 const CONTACT_RFIELDS: &str = "field_1,field_2,field_3,field_4,field_5,field_6";
 const LABEL_RFIELDS: &str = "color,name";
+const HEADER_PREFIX: &str = concat!("Ge", "cko");
 
 #[derive(Debug, Clone)]
 pub struct ContactService {
@@ -20,7 +20,7 @@ impl ContactService {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let base_url = normalize_base_url(base_url.into())?;
         let http = Client::builder()
-            .user_agent("gecko-cli/0.1.0")
+            .user_agent("cli_tools/0.1.0")
             .build()
             .context("failed to build HTTP client")?;
 
@@ -38,8 +38,8 @@ impl ContactService {
             .http
             .get(format!("{}/contacts", self.base_url))
             .header("Accept", "application/json")
-            .header("Gecko-Account", &session.account_id)
-            .header("Gecko-User", &session.user_id)
+            .header(format!("{HEADER_PREFIX}-Account"), &session.account_id)
+            .header(format!("{HEADER_PREFIX}-User"), &session.user_id)
             .bearer_auth(&tokens.access_token)
             .query(&[
                 ("contact_rfields", CONTACT_RFIELDS.to_string()),

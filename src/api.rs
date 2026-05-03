@@ -3,8 +3,6 @@ use reqwest::blocking::{Client, RequestBuilder};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-pub const DEFAULT_BASE_URL: &str = "https://account-api-stage.geckoengage.com";
-
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     base_url: String,
@@ -15,7 +13,7 @@ impl ApiClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let base_url = normalize_base_url(base_url.into())?;
         let http = Client::builder()
-            .user_agent("gecko-cli/0.1.0")
+            .user_agent("cli_tools/0.1.0")
             .build()
             .context("failed to build HTTP client")?;
 
@@ -100,9 +98,9 @@ fn api_error(payload: &Value) -> Option<anyhow::Error> {
         .map(|message| anyhow!(message.to_string()))
 }
 
-pub fn normalize_base_url(mut value: String) -> Result<String> {
+pub fn normalize_base_url(value: String) -> Result<String> {
     if value.trim().is_empty() {
-        value = DEFAULT_BASE_URL.to_string();
+        bail!("base URL was not provided");
     }
 
     let normalized = value.trim().trim_end_matches('/').to_string();
@@ -120,13 +118,18 @@ mod tests {
     #[test]
     fn normalizes_base_urls() {
         assert_eq!(
-            normalize_base_url("https://account-api-stage.geckoengage.com/".to_string()).unwrap(),
-            "https://account-api-stage.geckoengage.com"
+            normalize_base_url("https://account-api.example.test/".to_string()).unwrap(),
+            "https://account-api.example.test"
         );
     }
 
     #[test]
     fn rejects_base_urls_without_scheme() {
-        assert!(normalize_base_url("account-api-stage.geckoengage.com".to_string()).is_err());
+        assert!(normalize_base_url("account-api.example.test".to_string()).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_base_urls() {
+        assert!(normalize_base_url(" ".to_string()).is_err());
     }
 }
