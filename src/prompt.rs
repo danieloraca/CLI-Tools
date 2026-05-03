@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::io::{self, Write};
 
 pub fn prompt(label: &str) -> Result<String> {
@@ -15,18 +15,4 @@ pub fn prompt(label: &str) -> Result<String> {
 
 pub fn prompt_secret(label: &str) -> Result<String> {
     rpassword::prompt_password(label).context("failed to read password")
-}
-
-pub fn prompt_index(label: &str, max: usize) -> Result<usize> {
-    if max == 0 {
-        bail!("nothing to select");
-    }
-
-    loop {
-        let raw = prompt(label)?;
-        match raw.parse::<usize>() {
-            Ok(value) if (1..=max).contains(&value) => return Ok(value),
-            _ => eprintln!("Enter a number between 1 and {max}."),
-        }
-    }
 }

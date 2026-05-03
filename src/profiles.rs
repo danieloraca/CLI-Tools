@@ -1,7 +1,7 @@
 use crate::api::ApiClient;
 use crate::auth::TokenSet;
-use crate::prompt::prompt_index;
 use crate::session::AppSession;
+use crate::tui::run_profile_selector_tui;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -145,8 +145,6 @@ pub fn select_profile_after_login(
         bail!("No Profiles for your account found");
     }
 
-    println!("{}", render_profile_choices(&choices));
-
     let selected = select_choice(&choices, &options)?;
     let redirect = service.redirect_url(
         tokens,
@@ -211,6 +209,7 @@ pub fn build_profile_choices(data: &SaturateResponse) -> Result<Vec<ProfileChoic
     Ok(open)
 }
 
+#[cfg(test)]
 pub fn render_profile_choices(choices: &[ProfileChoice]) -> String {
     let mut output = String::from("Profiles:\n");
     let mut open_index = 1;
@@ -262,8 +261,8 @@ fn select_choice<'a>(
         return Ok(open_choices[0]);
     }
 
-    let index = prompt_index("Choose profile: ", open_choices.len())?;
-    Ok(open_choices[index - 1])
+    let index = run_profile_selector_tui(&open_choices)?;
+    Ok(open_choices[index])
 }
 
 fn id_matches(value: &Value, expected: &str) -> bool {

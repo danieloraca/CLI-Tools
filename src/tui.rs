@@ -1,4 +1,5 @@
 use crate::contacts::{ContactRow, ContactsPage, render_contacts_page};
+use crate::profiles::ProfileChoice;
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -18,6 +19,191 @@ use ratatui::{
 use std::{io, time::Duration};
 
 const TURQUOISE: Color = Color::Rgb(64, 224, 208);
+
+#[derive(Debug, Clone)]
+pub struct ProfileSelectorTui<'a> {
+    choices: &'a [&'a ProfileChoice],
+    state: ListState,
+}
+
+impl<'a> ProfileSelectorTui<'a> {
+    pub fn new(choices: &'a [&'a ProfileChoice]) -> Self {
+        let mut state = ListState::default();
+        if !choices.is_empty() {
+            state.select(Some(0));
+        }
+
+        Self { choices, state }
+    }
+
+    #[cfg(test)]
+    fn selected_index(&self) -> Option<usize> {
+        self.state.selected()
+    }
+
+    fn selected_choice(&self) -> Option<&ProfileChoice> {
+        self.state
+            .selected()
+            .and_then(|index| self.choices.get(index).copied())
+    }
+
+    pub fn next(&mut self) {
+        let len = self.choices.len();
+        if len == 0 {
+            self.state.select(None);
+            return;
+        }
+
+        let index = match self.state.selected() {
+            Some(index) if index + 1 < len => index + 1,
+            _ => 0,
+        };
+        self.state.select(Some(index));
+    }
+
+    pub fn previous(&mut self) {
+        let len = self.choices.len();
+        if len == 0 {
+            self.state.select(None);
+            return;
+        }
+
+        let index = match self.state.selected() {
+            Some(0) | None => len - 1,
+            Some(index) => index - 1,
+        };
+        self.state.select(Some(index));
+    }
+}
+
+pub fn run_profile_selector_tui(choices: &[&ProfileChoice]) -> Result<usize> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = ProfileSelectorTui::new(choices);
+    let result = run_profile_selector_loop(&mut terminal, &mut app);
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+fn run_profile_selector_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ProfileSelectorTui<'_>,
+) -> Result<usize> {
+    loop {
+        terminal.draw(|frame| draw_profile_selector(frame, app))?;
+
+        if event::poll(Duration::from_millis(250))? {
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => app.next(),
+                KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => app.previous(),
+                KeyCode::Enter => return Ok(app.state.selected().unwrap_or(0)),
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    anyhow::bail!("profile selection cancelled")
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn draw_profile_selector(frame: &mut Frame, app: &mut ProfileSelectorTui<'_>) {
+    let area = frame.area();
+    let shell = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" Select Profile ", Style::default().fg(Color::White)),
+            Span::styled(
+                "enter choose | up/down move | q/esc cancel",
+                Style::default().fg(Color::Gray),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(TURQUOISE));
+    frame.render_widget(shell, area);
+
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(inner);
+
+    let items = app
+        .choices
+        .iter()
+        .map(|choice| {
+            ListItem::new(vec![
+                Line::from(Span::styled(
+                    &choice.account_name,
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    &choice.app_description,
+                    Style::default().fg(Color::Gray),
+                )),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    let list = List::new(items)
+        .block(Block::default().title(" Profiles ").borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .bg(TURQUOISE)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+    frame.render_stateful_widget(list, layout[0], &mut app.state);
+
+    let details = profile_details(app.selected_choice(), app.choices.len());
+    frame.render_widget(details, layout[1]);
+}
+
+fn profile_details(choice: Option<&ProfileChoice>, count: usize) -> Paragraph<'static> {
+    let lines = if let Some(choice) = choice {
+        vec![
+            Line::from(Span::styled(
+                choice.account_name.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            detail_line("Application", &choice.app_description),
+            detail_line("Account", &choice.account_header),
+            detail_line("Profiles", &count.to_string()),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press Enter to continue with this profile.",
+                Style::default().fg(TURQUOISE),
+            )),
+        ]
+    } else {
+        vec![Line::from("No profiles available")]
+    };
+
+    Paragraph::new(lines)
+        .block(Block::default().title(" Details ").borders(Borders::ALL))
+        .wrap(Wrap { trim: true })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
@@ -507,6 +693,54 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn profile_choices() -> Vec<ProfileChoice> {
+        vec![
+            ProfileChoice {
+                profile_id: serde_json::json!("p-1"),
+                account_id: serde_json::json!(281),
+                account_header: "281".to_string(),
+                account_name: "Stage 281".to_string(),
+                app_description: "Client Administration (Manage)".to_string(),
+                is_closed: false,
+            },
+            ProfileChoice {
+                profile_id: serde_json::json!("p-2"),
+                account_id: serde_json::json!(281),
+                account_header: "281".to_string(),
+                account_name: "Stage 281".to_string(),
+                app_description: "Forms, Events, Call Centre, Email & Text Campaigns".to_string(),
+                is_closed: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn profile_selector_starts_on_first_profile() {
+        let choices = profile_choices();
+        let refs = choices.iter().collect::<Vec<_>>();
+        let app = ProfileSelectorTui::new(&refs);
+
+        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(
+            app.selected_choice().unwrap().profile_id,
+            serde_json::json!("p-1")
+        );
+    }
+
+    #[test]
+    fn profile_selector_moves_with_wraparound() {
+        let choices = profile_choices();
+        let refs = choices.iter().collect::<Vec<_>>();
+        let mut app = ProfileSelectorTui::new(&refs);
+
+        app.next();
+        assert_eq!(app.selected_index(), Some(1));
+        app.next();
+        assert_eq!(app.selected_index(), Some(0));
+        app.previous();
+        assert_eq!(app.selected_index(), Some(1));
     }
 
     #[test]
