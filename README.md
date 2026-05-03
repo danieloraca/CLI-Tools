@@ -32,7 +32,10 @@ Controls:
 - Move selection: `up`/`down` or `j`/`k`
 - Change page: `left`/`right` or `h`/`l`
 - Change page size: `+`/`-`, `[`/`]`, or `1`/`2`/`3` for `15`/`30`/`50`
-- Select contact: `enter`
+- Open contact overview: `enter`
+- Return from contact overview: `b`, `left`, or `backspace`
 - Quit: `q` or `esc`
+
+The contact overview loads current profile values, shows a header with name/email/labels, and includes an activity placeholder for a later pass.
 
 Profile selection, menu, and contacts screens show their controls in the bottom-right legend panel.
