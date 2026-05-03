@@ -1,7 +1,8 @@
 use crate::api::ApiClient;
 use crate::auth::TokenSet;
+use crate::progress::run_with_spinner;
 use crate::session::AppSession;
-use crate::tui::run_profile_selector_tui;
+use crate::tui::{run_profile_selector_tui, run_profile_selector_tui_with_loader};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -46,11 +47,13 @@ impl ProfileService {
         client: &str,
         app: Option<&str>,
     ) -> Result<SaturateResponse> {
-        self.api.get(
-            "/user/saturate",
-            &[("client", Some(client)), ("app", app)],
-            Some(&tokens.id_token),
-        )
+        run_with_spinner("Loading accounts...", || {
+            self.api.get(
+                "/user/saturate",
+                &[("client", Some(client)), ("app", app)],
+                Some(&tokens.id_token),
+            )
+        })
     }
 
     pub fn redirect_url(
@@ -60,15 +63,17 @@ impl ProfileService {
         client: &str,
         app: Option<&str>,
     ) -> Result<RedirectResponse> {
-        self.api.post(
-            "/user/redirect",
-            &json!({
-                "client": client,
-                "app": app,
-                "ProfileId": profile_id,
-            }),
-            Some(&tokens.id_token),
-        )
+        run_with_spinner("Preparing selected account...", || {
+            self.api.post(
+                "/user/redirect",
+                &json!({
+                    "client": client,
+                    "app": app,
+                    "ProfileId": profile_id,
+                }),
+                Some(&tokens.id_token),
+            )
+        })
     }
 }
 
@@ -145,13 +150,7 @@ pub fn select_profile_after_login(
         bail!("No Profiles for your account found");
     }
 
-    let selected = select_choice(&choices, &options)?;
-    let redirect = service.redirect_url(
-        tokens,
-        selected.profile_id.clone(),
-        &options.client,
-        options.app.as_deref(),
-    )?;
+    let (selected, redirect) = select_choice_with_redirect(&service, tokens, &choices, &options)?;
 
     if options.print_redirect_url {
         println!("Redirect URL: {}", redirect.redirect_url);
@@ -164,6 +163,44 @@ pub fn select_profile_after_login(
         app_description: selected.app_description.clone(),
         user_id: user_id(&data)?,
         redirect_url: redirect.redirect_url,
+    })
+}
+
+fn select_choice_with_redirect(
+    service: &ProfileService,
+    tokens: &TokenSet,
+    choices: &[ProfileChoice],
+    options: &ProfileSelectionOptions,
+) -> Result<(ProfileChoice, RedirectResponse)> {
+    let open_choices = choices
+        .iter()
+        .filter(|choice| !choice.is_closed)
+        .collect::<Vec<_>>();
+
+    if open_choices.is_empty() {
+        bail!("no selectable open profiles found");
+    }
+
+    if options.profile_id.is_some() || (options.auto_select_single && open_choices.len() == 1) {
+        let selected = select_choice(choices, options)?;
+        let redirect = service.redirect_url(
+            tokens,
+            selected.profile_id.clone(),
+            &options.client,
+            options.app.as_deref(),
+        )?;
+        return Ok((selected.clone(), redirect));
+    }
+
+    run_profile_selector_tui_with_loader(&open_choices, "Preparing selected profile...", |index| {
+        let selected = open_choices[index];
+        let redirect = service.redirect_url(
+            tokens,
+            selected.profile_id.clone(),
+            &options.client,
+            options.app.as_deref(),
+        )?;
+        Ok((selected.clone(), redirect))
     })
 }
 

@@ -2,6 +2,8 @@
 
 Rust terminal tools for logging in, choosing a profile, and browsing contacts in a TUI.
 
+Blocking login, profile-loading, and contacts page changes show loading spinners while requests are in flight.
+
 ## Setup
 
 Create a local `.env` file:

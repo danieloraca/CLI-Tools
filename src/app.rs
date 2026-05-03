@@ -1,7 +1,9 @@
 use crate::auth::TokenSet;
 use crate::contacts::{ContactRow, ContactService};
 use crate::session::AppSession;
-use crate::tui::{ContactsAction, MenuAction, run_contacts_tui, run_main_menu_tui};
+use crate::tui::{
+    MainMenuOutcome, run_contacts_browser_tui, run_main_menu_tui_with_contacts_loader,
+};
 use anyhow::Result;
 
 #[derive(Debug, Clone)]
@@ -13,16 +15,32 @@ pub struct AppMenuOptions {
 
 pub fn run_menu(tokens: &TokenSet, session: &AppSession, options: AppMenuOptions) -> Result<()> {
     loop {
-        match run_main_menu_tui(&session.account_name, &session.app_description)? {
-            MenuAction::Contacts => {
-                if let Some(contact) = browse_contacts(tokens, session, options.clone())? {
+        let service = ContactService::new(&options.app_api_base_url)?;
+        let initial_page = run_main_menu_tui_with_contacts_loader(
+            &session.account_name,
+            &session.app_description,
+            || {
+                service.list_contacts(
+                    tokens,
+                    session,
+                    options.contacts_page.max(1),
+                    options.contacts_per_page,
+                )
+            },
+        )?;
+
+        match initial_page {
+            MainMenuOutcome::Contacts(initial_page) => {
+                if let Some(contact) =
+                    browse_contacts_from_page(tokens, session, options.clone(), initial_page)?
+                {
                     println!(
                         "Selected contact: {} <{}>\n",
                         contact.full_name, contact.email
                     );
                 }
             }
-            MenuAction::Quit => return Ok(()),
+            MainMenuOutcome::Quit => return Ok(()),
         }
     }
 }
@@ -33,30 +51,25 @@ pub fn browse_contacts(
     options: AppMenuOptions,
 ) -> Result<Option<ContactRow>> {
     let service = ContactService::new(&options.app_api_base_url)?;
-    let mut page = options.contacts_page.max(1);
-    let mut per_page = options.contacts_per_page;
+    let initial_page = service.list_contacts(
+        tokens,
+        session,
+        options.contacts_page.max(1),
+        options.contacts_per_page,
+    )?;
 
-    loop {
-        let contacts = service.list_contacts(tokens, session, page, per_page)?;
-        let pagination = contacts.pagination;
+    browse_contacts_from_page(tokens, session, options, initial_page)
+}
 
-        match run_contacts_tui(contacts)? {
-            ContactsAction::Selected(contact) => return Ok(Some(contact)),
-            ContactsAction::Quit => return Ok(None),
-            ContactsAction::PreviousPage => {
-                if pagination.can_go_previous() {
-                    page = page.saturating_sub(1).max(1);
-                }
-            }
-            ContactsAction::NextPage => {
-                if pagination.can_go_next() {
-                    page = page.saturating_add(1);
-                }
-            }
-            ContactsAction::ChangePerPage(next_per_page) => {
-                per_page = next_per_page;
-                page = 1;
-            }
-        }
-    }
+fn browse_contacts_from_page(
+    tokens: &TokenSet,
+    session: &AppSession,
+    options: AppMenuOptions,
+    initial_page: crate::contacts::ContactsPage,
+) -> Result<Option<ContactRow>> {
+    let service = ContactService::new(&options.app_api_base_url)?;
+
+    run_contacts_browser_tui(initial_page, |page, per_page| {
+        service.list_contacts(tokens, session, page, per_page)
+    })
 }

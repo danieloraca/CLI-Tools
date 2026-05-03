@@ -1,4 +1,4 @@
-use crate::contacts::{ContactRow, ContactsPage, render_contacts_page};
+use crate::contacts::{ContactRow, ContactsPage};
 use crate::profiles::ProfileChoice;
 use anyhow::Result;
 use crossterm::{
@@ -16,7 +16,7 @@ use ratatui::{
         Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
     },
 };
-use std::{io, time::Duration};
+use std::{io, thread, time::Duration};
 
 const TURQUOISE: Color = Color::Rgb(64, 224, 208);
 
@@ -24,6 +24,8 @@ const TURQUOISE: Color = Color::Rgb(64, 224, 208);
 pub struct ProfileSelectorTui<'a> {
     choices: &'a [&'a ProfileChoice],
     state: ListState,
+    status: Option<String>,
+    spinner_index: usize,
 }
 
 impl<'a> ProfileSelectorTui<'a> {
@@ -33,7 +35,12 @@ impl<'a> ProfileSelectorTui<'a> {
             state.select(Some(0));
         }
 
-        Self { choices, state }
+        Self {
+            choices,
+            state,
+            status: None,
+            spinner_index: 0,
+        }
     }
 
     #[cfg(test)]
@@ -74,9 +81,27 @@ impl<'a> ProfileSelectorTui<'a> {
         };
         self.state.select(Some(index));
     }
+
+    pub fn set_loading_status(&mut self, message: &str) {
+        let frame = SPINNER_FRAMES[self.spinner_index % SPINNER_FRAMES.len()];
+        self.spinner_index = self.spinner_index.wrapping_add(1);
+        self.status = Some(format!("{frame} {message}"));
+    }
 }
 
 pub fn run_profile_selector_tui(choices: &[&ProfileChoice]) -> Result<usize> {
+    run_profile_selector_tui_with_loader(choices, "Loading profile...", Ok)
+}
+
+pub fn run_profile_selector_tui_with_loader<T, F>(
+    choices: &[&ProfileChoice],
+    loading_message: &'static str,
+    mut loader: F,
+) -> Result<T>
+where
+    T: Send,
+    F: FnMut(usize) -> Result<T> + Send,
+{
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -84,7 +109,7 @@ pub fn run_profile_selector_tui(choices: &[&ProfileChoice]) -> Result<usize> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = ProfileSelectorTui::new(choices);
-    let result = run_profile_selector_loop(&mut terminal, &mut app);
+    let result = run_profile_selector_loop(&mut terminal, &mut app, loading_message, &mut loader);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -93,10 +118,16 @@ pub fn run_profile_selector_tui(choices: &[&ProfileChoice]) -> Result<usize> {
     result
 }
 
-fn run_profile_selector_loop(
+fn run_profile_selector_loop<T, F>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ProfileSelectorTui<'_>,
-) -> Result<usize> {
+    loading_message: &'static str,
+    loader: &mut F,
+) -> Result<T>
+where
+    T: Send,
+    F: FnMut(usize) -> Result<T> + Send,
+{
     loop {
         terminal.draw(|frame| draw_profile_selector(frame, app))?;
 
@@ -112,7 +143,16 @@ fn run_profile_selector_loop(
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => app.next(),
                 KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => app.previous(),
-                KeyCode::Enter => return Ok(app.state.selected().unwrap_or(0)),
+                KeyCode::Enter => {
+                    let selected = app.state.selected().unwrap_or(0);
+                    return load_profile_selection(
+                        terminal,
+                        app,
+                        selected,
+                        loading_message,
+                        loader,
+                    );
+                }
                 KeyCode::Char('q') | KeyCode::Esc => {
                     anyhow::bail!("profile selection cancelled")
                 }
@@ -120,6 +160,32 @@ fn run_profile_selector_loop(
             }
         }
     }
+}
+
+fn load_profile_selection<T, F>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ProfileSelectorTui<'_>,
+    index: usize,
+    loading_message: &'static str,
+    loader: &mut F,
+) -> Result<T>
+where
+    T: Send,
+    F: FnMut(usize) -> Result<T> + Send,
+{
+    thread::scope(|scope| -> Result<T> {
+        let handle = scope.spawn(|| loader(index));
+
+        while !handle.is_finished() {
+            app.set_loading_status(loading_message);
+            terminal.draw(|frame| draw_profile_selector(frame, app))?;
+            thread::sleep(Duration::from_millis(120));
+        }
+
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("profile loader panicked"))?
+    })
 }
 
 fn draw_profile_selector(frame: &mut Frame, app: &mut ProfileSelectorTui<'_>) {
@@ -173,12 +239,20 @@ fn draw_profile_selector(frame: &mut Frame, app: &mut ProfileSelectorTui<'_>) {
         .highlight_symbol(">> ");
     frame.render_stateful_widget(list, layout[0], &mut app.state);
 
-    let details = profile_details(app.selected_choice(), app.choices.len());
+    let details = profile_details(
+        app.selected_choice(),
+        app.choices.len(),
+        app.status.as_deref(),
+    );
     frame.render_widget(details, layout[1]);
 }
 
-fn profile_details(choice: Option<&ProfileChoice>, count: usize) -> Paragraph<'static> {
-    let lines = if let Some(choice) = choice {
+fn profile_details(
+    choice: Option<&ProfileChoice>,
+    count: usize,
+    status: Option<&str>,
+) -> Paragraph<'static> {
+    let mut lines = if let Some(choice) = choice {
         vec![
             Line::from(Span::styled(
                 choice.account_name.clone(),
@@ -200,6 +274,16 @@ fn profile_details(choice: Option<&ProfileChoice>, count: usize) -> Paragraph<'s
         vec![Line::from("No profiles available")]
     };
 
+    if let Some(status) = status {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            status.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+
     Paragraph::new(lines)
         .block(Block::default().title(" Details ").borders(Borders::ALL))
         .wrap(Wrap { trim: true })
@@ -211,12 +295,19 @@ pub enum MenuAction {
     Quit,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MainMenuOutcome {
+    Contacts(ContactsPage),
+    Quit,
+}
+
 #[derive(Debug, Clone)]
 pub struct MainMenuTui {
     account_name: String,
     app_description: String,
     state: ListState,
     status: String,
+    spinner_index: usize,
 }
 
 impl MainMenuTui {
@@ -229,6 +320,7 @@ impl MainMenuTui {
             app_description: app_description.into(),
             state,
             status: "Choose a section to open.".to_string(),
+            spinner_index: 0,
         }
     }
 
@@ -265,9 +357,22 @@ impl MainMenuTui {
             _ => None,
         }
     }
+
+    pub fn set_loading_status(&mut self, message: &str) {
+        let frame = SPINNER_FRAMES[self.spinner_index % SPINNER_FRAMES.len()];
+        self.spinner_index = self.spinner_index.wrapping_add(1);
+        self.status = format!("{frame} {message}");
+    }
 }
 
-pub fn run_main_menu_tui(account_name: &str, app_description: &str) -> Result<MenuAction> {
+pub fn run_main_menu_tui_with_contacts_loader<F>(
+    account_name: &str,
+    app_description: &str,
+    mut load_contacts: F,
+) -> Result<MainMenuOutcome>
+where
+    F: FnMut() -> Result<ContactsPage> + Send,
+{
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -275,7 +380,8 @@ pub fn run_main_menu_tui(account_name: &str, app_description: &str) -> Result<Me
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = MainMenuTui::new(account_name, app_description);
-    let result = run_main_menu_loop(&mut terminal, &mut app);
+    let result =
+        run_main_menu_loop_with_contacts_loader(&mut terminal, &mut app, &mut load_contacts);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -284,10 +390,14 @@ pub fn run_main_menu_tui(account_name: &str, app_description: &str) -> Result<Me
     result
 }
 
-fn run_main_menu_loop(
+fn run_main_menu_loop_with_contacts_loader<F>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut MainMenuTui,
-) -> Result<MenuAction> {
+    load_contacts: &mut F,
+) -> Result<MainMenuOutcome>
+where
+    F: FnMut() -> Result<ContactsPage> + Send,
+{
     loop {
         terminal.draw(|frame| draw_main_menu(frame, app))?;
 
@@ -301,18 +411,53 @@ fn run_main_menu_loop(
             }
 
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(MenuAction::Quit),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(MainMenuOutcome::Quit),
                 KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => app.next(),
                 KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => app.previous(),
                 KeyCode::Enter => {
                     if let Some(action) = app.activate() {
-                        return Ok(action);
+                        match action {
+                            MenuAction::Contacts => {
+                                return load_initial_contacts_page(
+                                    terminal,
+                                    app,
+                                    "Loading contacts...",
+                                    load_contacts,
+                                )
+                                .map(MainMenuOutcome::Contacts);
+                            }
+                            MenuAction::Quit => return Ok(MainMenuOutcome::Quit),
+                        }
                     }
                 }
                 _ => {}
             }
         }
     }
+}
+
+fn load_initial_contacts_page<F>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut MainMenuTui,
+    loading_message: &'static str,
+    load_contacts: &mut F,
+) -> Result<ContactsPage>
+where
+    F: FnMut() -> Result<ContactsPage> + Send,
+{
+    thread::scope(|scope| -> Result<ContactsPage> {
+        let handle = scope.spawn(load_contacts);
+
+        while !handle.is_finished() {
+            app.set_loading_status(loading_message);
+            terminal.draw(|frame| draw_main_menu(frame, app))?;
+            thread::sleep(Duration::from_millis(120));
+        }
+
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("contacts loader panicked"))?
+    })
 }
 
 fn draw_main_menu(frame: &mut Frame, app: &mut MainMenuTui) {
@@ -430,18 +575,12 @@ fn menu_items() -> &'static [MenuItem] {
 pub struct ContactsTui {
     page: ContactsPage,
     state: TableState,
+    status: Option<String>,
+    spinner_index: usize,
 }
 
 const CONTACTS_PER_PAGE_OPTIONS: [u32; 3] = [15, 30, 50];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContactsAction {
-    Selected(ContactRow),
-    PreviousPage,
-    NextPage,
-    ChangePerPage(u32),
-    Quit,
-}
+const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
 impl ContactsTui {
     pub fn new(page: ContactsPage) -> Self {
@@ -450,7 +589,12 @@ impl ContactsTui {
             state.select(Some(0));
         }
 
-        Self { page, state }
+        Self {
+            page,
+            state,
+            status: None,
+            spinner_index: 0,
+        }
     }
 
     pub fn selected_index(&self) -> Option<usize> {
@@ -476,6 +620,30 @@ impl ContactsTui {
 
     pub fn previous_per_page(&self) -> u32 {
         previous_per_page_value(self.page.pagination.per_page)
+    }
+
+    pub fn set_status(&mut self, status: impl Into<String>) {
+        self.status = Some(status.into());
+    }
+
+    pub fn set_loading_status(&mut self, page: u32) {
+        let frame = SPINNER_FRAMES[self.spinner_index % SPINNER_FRAMES.len()];
+        self.spinner_index = self.spinner_index.wrapping_add(1);
+        self.set_status(format!("{frame} Loading page {page}..."));
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status = None;
+    }
+
+    pub fn replace_page(&mut self, page: ContactsPage) {
+        self.page = page;
+        if self.page.contacts.is_empty() {
+            self.state.select(None);
+        } else {
+            self.state.select(Some(0));
+        }
+        self.clear_status();
     }
 
     pub fn next(&mut self) {
@@ -507,20 +675,21 @@ impl ContactsTui {
     }
 }
 
-pub fn run_contacts_tui(page: ContactsPage) -> Result<ContactsAction> {
-    if page.contacts.is_empty() {
-        println!("{}", render_contacts_page(&page));
-        return Ok(ContactsAction::Quit);
-    }
-
+pub fn run_contacts_browser_tui<F>(
+    initial_page: ContactsPage,
+    mut load_page: F,
+) -> Result<Option<ContactRow>>
+where
+    F: FnMut(u32, u32) -> Result<ContactsPage> + Send,
+{
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = ContactsTui::new(page);
-    let result = run_loop(&mut terminal, &mut app);
+    let mut app = ContactsTui::new(initial_page);
+    let result = run_browser_loop(&mut terminal, &mut app, &mut load_page);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -529,10 +698,14 @@ pub fn run_contacts_tui(page: ContactsPage) -> Result<ContactsAction> {
     result
 }
 
-fn run_loop(
+fn run_browser_loop<F>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ContactsTui,
-) -> Result<ContactsAction> {
+    load_page: &mut F,
+) -> Result<Option<ContactRow>>
+where
+    F: FnMut(u32, u32) -> Result<ContactsPage> + Send,
+{
     loop {
         terminal.draw(|frame| draw_contacts(frame, app))?;
 
@@ -546,37 +719,77 @@ fn run_loop(
             }
 
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(ContactsAction::Quit),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
                 KeyCode::Char('j') | KeyCode::Down => app.next(),
                 KeyCode::Char('k') | KeyCode::Up => app.previous(),
                 KeyCode::Char('h') | KeyCode::Char('p') | KeyCode::Left => {
                     if app.can_go_previous() {
-                        return Ok(ContactsAction::PreviousPage);
+                        load_contacts_page(
+                            terminal,
+                            app,
+                            app.page.pagination.page.saturating_sub(1).max(1),
+                            app.page.pagination.per_page,
+                            load_page,
+                        )?;
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Char('n') | KeyCode::Right => {
                     if app.can_go_next() {
-                        return Ok(ContactsAction::NextPage);
+                        load_contacts_page(
+                            terminal,
+                            app,
+                            app.page.pagination.page.saturating_add(1),
+                            app.page.pagination.per_page,
+                            load_page,
+                        )?;
                     }
                 }
                 KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') => {
-                    return Ok(ContactsAction::ChangePerPage(app.next_per_page()));
+                    load_contacts_page(terminal, app, 1, app.next_per_page(), load_page)?;
                 }
                 KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[') => {
-                    return Ok(ContactsAction::ChangePerPage(app.previous_per_page()));
+                    load_contacts_page(terminal, app, 1, app.previous_per_page(), load_page)?;
                 }
-                KeyCode::Char('1') => return Ok(ContactsAction::ChangePerPage(15)),
-                KeyCode::Char('2') => return Ok(ContactsAction::ChangePerPage(30)),
-                KeyCode::Char('3') => return Ok(ContactsAction::ChangePerPage(50)),
+                KeyCode::Char('1') => load_contacts_page(terminal, app, 1, 15, load_page)?,
+                KeyCode::Char('2') => load_contacts_page(terminal, app, 1, 30, load_page)?,
+                KeyCode::Char('3') => load_contacts_page(terminal, app, 1, 50, load_page)?,
                 KeyCode::Enter => {
                     if let Some(contact) = app.selected_contact().cloned() {
-                        return Ok(ContactsAction::Selected(contact));
+                        return Ok(Some(contact));
                     }
                 }
                 _ => {}
             }
         }
     }
+}
+
+fn load_contacts_page<F>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ContactsTui,
+    page: u32,
+    per_page: u32,
+    load_page: &mut F,
+) -> Result<()>
+where
+    F: FnMut(u32, u32) -> Result<ContactsPage> + Send,
+{
+    let next_page = thread::scope(|scope| -> Result<ContactsPage> {
+        let handle = scope.spawn(|| load_page(page, per_page));
+
+        while !handle.is_finished() {
+            app.set_loading_status(page);
+            terminal.draw(|frame| draw_contacts(frame, app))?;
+            thread::sleep(Duration::from_millis(120));
+        }
+
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("contacts page loader panicked"))?
+    })?;
+
+    app.replace_page(next_page);
+    Ok(())
 }
 
 fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
@@ -652,10 +865,13 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
     frame.render_widget(details, side_chunks[0]);
     frame.render_widget(contacts_legend(), side_chunks[1]);
 
-    frame.render_widget(contacts_footer(&app.page), vertical[1]);
+    frame.render_widget(
+        contacts_footer(&app.page, app.status.as_deref()),
+        vertical[1],
+    );
 }
 
-fn contacts_footer(page: &ContactsPage) -> Paragraph<'static> {
+fn contacts_footer(page: &ContactsPage, status: Option<&str>) -> Paragraph<'static> {
     let total_results = page
         .pagination
         .total_results
@@ -678,7 +894,7 @@ fn contacts_footer(page: &ContactsPage) -> Paragraph<'static> {
         .collect::<Vec<_>>()
         .join("/");
 
-    Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!("Found {total_results} results. "),
             Style::default().fg(Color::Gray),
@@ -691,8 +907,18 @@ fn contacts_footer(page: &ContactsPage) -> Paragraph<'static> {
             format!("Page {} of {total_pages}. ", page.pagination.page),
             Style::default().fg(TURQUOISE).add_modifier(Modifier::BOLD),
         ),
-    ]))
-    .block(Block::default().borders(Borders::ALL))
+    ];
+
+    if let Some(status) = status {
+        spans.push(Span::styled(
+            status.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL))
 }
 
 fn contacts_legend() -> Paragraph<'static> {
@@ -934,5 +1160,17 @@ mod tests {
         assert_eq!(next_per_page_value(30), 50);
         assert_eq!(next_per_page_value(50), 15);
         assert_eq!(previous_per_page_value(30), 15);
+    }
+
+    #[test]
+    fn contacts_loading_status_uses_spinner_frames() {
+        let mut app = ContactsTui::new(contacts_page());
+
+        app.set_loading_status(2);
+        assert_eq!(app.status.as_deref(), Some("| Loading page 2..."));
+        app.set_loading_status(2);
+        assert_eq!(app.status.as_deref(), Some("/ Loading page 2..."));
+        app.clear_status();
+        assert_eq!(app.status, None);
     }
 }

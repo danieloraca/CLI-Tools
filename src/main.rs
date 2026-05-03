@@ -3,6 +3,7 @@ mod app;
 mod auth;
 mod contacts;
 mod profiles;
+mod progress;
 mod prompt;
 mod session;
 mod tui;

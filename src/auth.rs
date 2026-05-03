@@ -1,4 +1,5 @@
 use crate::api::ApiClient;
+use crate::progress::run_with_spinner;
 use crate::prompt::{prompt, prompt_secret};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -51,11 +52,13 @@ impl AuthClient {
     }
 
     pub fn initiate(&self, username: &str) -> Result<AuthResponse> {
-        self.api.post(
-            "/auth/initiate",
-            &json!({ "Username": username.trim() }),
-            None,
-        )
+        run_with_spinner("Starting login...", || {
+            self.api.post(
+                "/auth/initiate",
+                &json!({ "Username": username.trim() }),
+                None,
+            )
+        })
     }
 
     pub fn respond(
@@ -77,13 +80,15 @@ impl AuthClient {
             }
         }
 
-        self.api.post("/auth/respond", &Value::Object(body), None)
+        run_with_spinner("Submitting login challenge...", || {
+            self.api.post("/auth/respond", &Value::Object(body), None)
+        })
     }
 
     pub fn claim_code(&self, code: &str) -> Result<TokenSet> {
-        let response: AuthResponse =
-            self.api
-                .get("/tokens/claim", &[("code", Some(code))], None)?;
+        let response: AuthResponse = run_with_spinner("Claiming app session...", || {
+            self.api.get("/tokens/claim", &[("code", Some(code))], None)
+        })?;
         response.require_tokens()
     }
 }
