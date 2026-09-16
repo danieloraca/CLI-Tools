@@ -25,8 +25,8 @@ Each implementation step gets focused tests, formatting, strict Clippy, an indep
 | 2 | Field catalog, configurable export columns, CSV and explicit all-page export | Complete |
 | 3 | Targeted bulk label and consent changes with preview and resumable progress | Complete |
 | 4 | Add selected contacts to existing organisations/events | Complete |
-| 5 | Verify a recorded scenario against its expected values/resources | In progress |
-| 6 | Preview and clean up resources recorded as created by a scenario run | Pending |
+| 5 | Verify a recorded scenario against its expected values/resources | Complete |
+| 6 | Preview and clean up resources recorded as created by a scenario run | In progress |
 
 ### 1. Search, filters, and JSON
 
@@ -92,3 +92,5 @@ Step 1 commit: `369513d`. Step 2: 80 tests, formatting and strict Clippy pass; E
 Step 2 commit: `e5fa2fa`. Step 3: 89 tests, formatting and strict Clippy pass; BATCH-01 resolved by omitting an unsupported extra label-removal command. Label addition and consent grant/revoke are complete.
 
 Step 3 commit: `eb466f2`. Step 4: 94 tests, formatting and strict Clippy pass; MEMBER-01 resolved. Session containers require selection of a concrete session-time ID; actual attendance outcomes are recorded.
+
+Step 4 commit: `118f42f`. Step 5: 100 tests, formatting and strict Clippy pass; independent review found no supported defects.

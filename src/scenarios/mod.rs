@@ -1,5 +1,6 @@
 mod apply;
 mod fixture;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -13,6 +14,8 @@ pub enum ScenarioCommand {
     Generate(GenerateArgs),
     /// Apply a fixture to an explicitly selected development profile, recording progress.
     Apply(apply::ApplyArgs),
+    /// Verify recorded resources and values without changing Gecko.
+    Verify(apply::ApplyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -75,6 +78,11 @@ pub fn run(command: ScenarioCommand) -> Result<()> {
                 io::stdout().lock().write_all(&data)?;
             }
             Ok(())
+        }
+        ScenarioCommand::Verify(args) => {
+            let scenario: fixture::Scenario = serde_json::from_slice(&fs::read(&args.fixture)?)
+                .context("invalid scenario fixture")?;
+            verify::run(&args, &scenario)
         }
         ScenarioCommand::Apply(args) => {
             let data = fs::read(&args.fixture)

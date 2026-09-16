@@ -227,6 +227,16 @@ To recover, stop other apply processes, back up the journal, and inspect the tar
 
 If a crash leaves a `.tmp` checkpoint, compare it with the main journal and Gecko before promoting or removing it. Do not discard a journal simply to retry: that starts another run. Resource IDs are also available for manual cleanup in Gecko; automated deletion is not included.
 
+### Verify a recorded scenario
+
+```sh
+cargo run -- scenario verify admissions.json --profile-id YOUR_DEV_PROFILE_ID
+```
+
+Verification uses the matching apply journal (`--state-file` overrides it), checks the fixture fingerprint and API/account/profile, and holds its lifecycle lock. It makes only read requests. The JSON report checks recorded contacts, actual standard/custom field IDs and types, custom field labels, group names/permissions, and duplicate/missing email counts. Mandatory Gecko permissions are allowed alongside fixture permissions.
+
+Missing resources, changed values, incomplete checkpoints, uncertain writes, and values that are masked or inaccessible make verification fail with a nonzero exit. Mismatch reports identify resource/field keys but omit contact values; restricted values are **unverified**, never counted as passed. Numeric values tolerate database decimal strings while retaining exact integer comparisons. Verification does not alter the journal or repair the data.
+
 ## Verification
 
 ```sh

@@ -122,3 +122,13 @@ Original reviewer report:
 > MEMBER-01 resolved: session containers and missing/unknown types rejected in preflight; discovery exposes type/parent_id, with zero-write coverage. No remaining findings in this focused follow-up.
 
 Owner disposition: accepted. Step 4 complete with 94 tests, formatting and strict Clippy passing.
+
+## Step 5 — source review
+
+Target: baseline `118f42f`, manifest SHA-256 `71f67898257a10365ed06adb3357210b0942724318b531a3a328209239632a5e`.
+
+Original reviewer report:
+
+> No supported findings. Reviewed fixture/journal binding, checkpoint validation, field mapping, permissions, typed values, email counts, restricted-value handling and shared HTTP errors against local contracts. Verified manifest/file hashes and git diff --check; no live operations. Tests/Clippy are owner-run evidence.
+
+Owner disposition: accepted. Step 5 complete with 100 tests, formatting and strict Clippy passing.

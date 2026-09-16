@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Args)]
 pub struct ApplyArgs {
-    /// Generated JSON fixture to apply.
+    /// Scenario JSON fixture.
     pub fixture: PathBuf,
     /// Must match the profile in the saved session; use a development profile.
     #[arg(long)]
@@ -33,15 +33,15 @@ pub struct ApplyArgs {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct State {
-    version: u32,
-    target: Target,
-    fixture_sha256: String,
-    run_id: String,
+pub(super) struct State {
+    pub(super) version: u32,
+    pub(super) target: Target,
+    pub(super) fixture_sha256: String,
+    pub(super) run_id: String,
     /// Keys are field:KEY, group:KEY, contact:KEY and populated:KEY.
-    completed: BTreeMap<String, String>,
+    pub(super) completed: BTreeMap<String, String>,
     /// Written before each mutation. An unknown outcome must never be retried automatically.
-    pending: Option<String>,
+    pub(super) pending: Option<String>,
 }
 
 pub fn run(args: &ApplyArgs, scenario: Scenario) -> Result<()> {
@@ -96,7 +96,7 @@ pub fn run(args: &ApplyArgs, scenario: Scenario) -> Result<()> {
     Ok(())
 }
 
-fn load_state(path: &Path, target: Target, scenario: &Scenario) -> Result<State> {
+pub(super) fn load_state(path: &Path, target: Target, scenario: &Scenario) -> Result<State> {
     let fixture_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(scenario)?));
     match fs::read(path) {
         Ok(data) => {

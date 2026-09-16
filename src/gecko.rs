@@ -114,7 +114,11 @@ impl GeckoApi {
                 .iter()
                 .find_map(|key| payload.get(key).and_then(Value::as_str))
                 .unwrap_or("request rejected");
-            bail!("Gecko API returned HTTP {status}: {message}");
+            return Err(ApiError {
+                status: status.as_u16(),
+                message: message.into(),
+            }
+            .into());
         }
         Ok((headers, payload))
     }
@@ -169,3 +173,19 @@ pub fn resource_id(resource: &Value) -> Result<String> {
     );
     Ok(id)
 }
+
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: u16,
+    message: String,
+}
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Gecko API returned HTTP {}: {}",
+            self.status, self.message
+        )
+    }
+}
+impl std::error::Error for ApiError {}
