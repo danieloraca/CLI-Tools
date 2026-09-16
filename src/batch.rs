@@ -3,7 +3,7 @@ use crate::{
     gecko::{GeckoApi, Target, resource_id},
 };
 use anyhow::{Context, Result, ensure};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -47,8 +47,47 @@ pub struct ConsentArgs {
     #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
     pub consent_id: u64,
 }
+#[derive(Debug, Args)]
+pub struct OrganisationArgs {
+    #[command(flatten)]
+    pub selection: Selection,
+    #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
+    pub organisation_id: u64,
+}
+#[derive(Debug, Args)]
+pub struct EventArgs {
+    #[command(flatten)]
+    pub selection: Selection,
+    #[arg(long, value_parser=clap::value_parser!(u64).range(1..))]
+    pub event_id: u64,
+    /// Status for a new/reactivated attendance. Existing active attendance is retained.
+    #[arg(long, value_enum, default_value = "registered")]
+    pub status: AttendanceStatus,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum AttendanceStatus {
+    Registered,
+    Invited,
+    Attended,
+    Waitlisted,
+}
+impl AttendanceStatus {
+    fn code(self) -> u64 {
+        match self {
+            Self::Registered => 10,
+            Self::Invited => 20,
+            Self::Attended => 30,
+            Self::Waitlisted => 50,
+        }
+    }
+}
 #[derive(Debug, Subcommand)]
 pub enum BatchCommand {
+    /// Add contacts to an existing organisation, preserving existing memberships.
+    OrganisationAdd(OrganisationArgs),
+    /// Add contacts to an existing event and report actual attendance status.
+    EventAdd(EventArgs),
     /// Add an existing label to selected contacts.
     LabelAdd(LabelArgs),
     /// Grant one existing consent reason, preserving all others.
@@ -59,6 +98,8 @@ pub enum BatchCommand {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    Organisation { id: u64 },
+    Event { id: u64, status: AttendanceStatus },
     LabelAdd { id: u64 },
     Consent { id: u64, grant: bool },
 }
@@ -75,6 +116,19 @@ struct State {
 
 pub fn run(command: BatchCommand) -> Result<()> {
     let (selection, operation) = match command {
+        BatchCommand::OrganisationAdd(a) => (
+            a.selection,
+            Operation::Organisation {
+                id: a.organisation_id,
+            },
+        ),
+        BatchCommand::EventAdd(a) => (
+            a.selection,
+            Operation::Event {
+                id: a.event_id,
+                status: a.status,
+            },
+        ),
         BatchCommand::LabelAdd(a) => (a.selection, Operation::LabelAdd { id: a.label_id }),
         BatchCommand::ConsentGrant(a) => (
             a.selection,
@@ -167,7 +221,7 @@ fn execute(selection: &Selection, operation: Operation) -> Result<Value> {
         .filter(|id| !state.completed.contains_key(*id))
     {
         let contact = operation.read_contact(&api, id)?;
-        preview.push(json!({"contact_id":id,"change_required":!operation.satisfied(&contact)?}));
+        preview.push(json!({"contact_id":id,"change_required":!operation.satisfied(&contact)?,"current":operation.outcome(&contact)?}));
     }
     save(selection, &state)?;
     if !selection.execute {
@@ -183,20 +237,28 @@ fn execute(selection: &Selection, operation: Operation) -> Result<Value> {
         if state.completed.contains_key(id) {
             continue;
         }
-        let current = operation.read_contact(&api, id)?;
+        let mut current = operation.read_contact(&api, id)?;
         if !operation.satisfied(&current)? {
             state.pending = Some(id.clone());
             save(selection, &state)?;
-            operation.apply(&api, id).with_context(|| {
+            let created_id = operation.apply(&api, id).with_context(|| {
                 format!("contact {id} outcome is uncertain; pending journal entry retained")
             })?;
-            let after = operation.read_contact(&api, id)?;
+            current = operation.read_contact(&api, id)?;
+            if let Some(created_id) = created_id {
+                ensure!(
+                    resource_id(&current["membership"])? == created_id,
+                    "membership readback differs from the mutation response; outcome remains pending"
+                );
+            }
             ensure!(
-                operation.satisfied(&after)?,
+                operation.satisfied(&current)?,
                 "contact {id} did not confirm the requested result; outcome remains pending"
             );
         }
-        state.completed.insert(id.clone(), json!({"verified":true}));
+        state
+            .completed
+            .insert(id.clone(), operation.outcome(&current)?);
         state.pending = None;
         save(selection, &state)?;
     }
@@ -206,12 +268,14 @@ fn save(selection: &Selection, state: &State) -> Result<()> {
     crate::storage::write_private_atomic(&selection.journal, &serde_json::to_vec_pretty(state)?)
 }
 fn report(state: &State, executed: bool, preview: &[Value]) -> Value {
-    json!({"executed":executed,"target":state.target,"operation":state.operation,"contact_ids":state.contact_ids,"completed":state.completed.len(),"pending":state.pending,"preview":preview})
+    json!({"executed":executed,"target":state.target,"operation":state.operation,"contact_ids":state.contact_ids,"completed":state.completed.len(),"results":state.completed,"pending":state.pending,"preview":preview})
 }
 
 impl Operation {
     fn validate_destination(&self, api: &GeckoApi) -> Result<()> {
         let (endpoint, singular, id) = match self {
+            Self::Organisation { id } => ("organisations", "organisation", id),
+            Self::Event { id, .. } => ("events", "event", id),
             Self::LabelAdd { id } => ("labels", "label", id),
             Self::Consent { id, .. } => ("consents", "consent", id),
         };
@@ -221,6 +285,20 @@ impl Operation {
             resource_id(object)? == id.to_string(),
             "destination response has an unexpected ID"
         );
+        if matches!(self, Self::Event { .. }) {
+            let kind = object["type"]
+                .as_u64()
+                .or_else(|| object["type"].as_str().and_then(|s| s.parse().ok()))
+                .context("event type is missing; cannot confirm registration destination")?;
+            ensure!(
+                kind != 20,
+                "select a session-time ID, not a session container; use events list to inspect type and parent_id"
+            );
+            ensure!(
+                matches!(kind, 10 | 30 | 90 | 100),
+                "unsupported event type {kind}; cannot confirm registration destination"
+            );
+        }
         Ok(())
     }
     fn read_contact(&self, api: &GeckoApi, id: &str) -> Result<Value> {
@@ -239,10 +317,62 @@ impl Operation {
             resource_id(contact)? == id,
             "contact response has an unexpected ID"
         );
-        Ok(contact.clone())
+        let mut contact = contact.clone();
+        if let Some((endpoint, foreign_key, destination)) = self.membership_query() {
+            let memberships = api.collection(
+                endpoint,
+                &[
+                    ("contact_id", id.into()),
+                    (foreign_key, destination.to_string()),
+                ],
+            )?;
+            ensure!(
+                memberships.len() <= 1,
+                "multiple memberships returned for one contact/destination"
+            );
+            for membership in &memberships {
+                ensure!(
+                    resource_id(&json!({"id":membership["contact_id"]}))? == id
+                        && resource_id(&json!({"id":membership[foreign_key]}))?
+                            == destination.to_string(),
+                    "membership response contains a foreign contact or destination"
+                );
+            }
+            contact["membership"] = memberships.into_iter().next().unwrap_or(Value::Null);
+        }
+        Ok(contact)
+    }
+    fn membership_query(&self) -> Option<(&'static str, &'static str, u64)> {
+        match self {
+            Self::Organisation { id } => Some(("enrolments", "organisation_id", *id)),
+            Self::Event { id, .. } => Some(("attendances", "event_id", *id)),
+            _ => None,
+        }
+    }
+    fn outcome(&self, contact: &Value) -> Result<Value> {
+        let membership = &contact["membership"];
+        match self {
+            Self::Organisation { .. } if !membership.is_null() => {
+                Ok(json!({"member":true,"membership_id":resource_id(membership)?}))
+            }
+            Self::Event { status, .. } if !membership.is_null() => {
+                let actual = attendance_status(membership)?;
+                Ok(
+                    json!({"member":self.satisfied(contact)?,"membership_id":resource_id(membership)?,"status":actual,"status_title":status_title(actual),"requested_status":status.code(),"matches_requested":actual==status.code()}),
+                )
+            }
+            Self::Organisation { .. } | Self::Event { .. } => Ok(json!({"member":false})),
+            _ => Ok(json!({"verified":self.satisfied(contact)?})),
+        }
     }
     fn satisfied(&self, contact: &Value) -> Result<bool> {
         match self {
+            Self::Organisation { .. } => Ok(!contact["membership"].is_null()),
+            Self::Event { .. } => {
+                let membership = &contact["membership"];
+                Ok(!membership.is_null()
+                    && matches!(attendance_status(membership)?, 10 | 15 | 20 | 30 | 40 | 50))
+            }
             Self::LabelAdd { id } => {
                 let labels = contact["labels"]
                     .as_array()
@@ -278,8 +408,27 @@ impl Operation {
             }
         }
     }
-    fn apply(&self, api: &GeckoApi, contact_id: &str) -> Result<()> {
+    fn apply(&self, api: &GeckoApi, contact_id: &str) -> Result<Option<String>> {
+        if let Self::Organisation { id } = self {
+            let payload = api.request(
+                Method::POST,
+                &format!("organisations/{id}/add_contact/{contact_id}"),
+                &[],
+                None,
+            )?;
+            return Ok(Some(resource_id(single(&payload, "enrolment")?)?));
+        }
+        if let Self::Event { id, status } = self {
+            let payload = api.request(
+                Method::POST,
+                &format!("contacts/{contact_id}/attend"),
+                &[],
+                Some(&json!({"event_id":id,"status":status.code()})),
+            )?;
+            return Ok(Some(resource_id(single(&payload, "attendance")?)?));
+        }
         let action = match self {
+            Self::Organisation { .. } | Self::Event { .. } => unreachable!(),
             Self::LabelAdd { id } => {
                 json!({"type":"assign_contact_label","to":[id]})
             }
@@ -297,7 +446,7 @@ impl Operation {
             payload.get("queue_id").is_none_or(Value::is_null),
             "Gecko queued this action; reconcile pending contact after it finishes"
         );
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -317,3 +466,29 @@ pub fn single<'a>(payload: &'a Value, singular: &str) -> Result<&'a Value> {
 
 #[cfg(test)]
 mod tests;
+
+fn attendance_status(membership: &Value) -> Result<u64> {
+    let status = membership["status"]
+        .as_u64()
+        .or_else(|| membership["status"].as_str().and_then(|s| s.parse().ok()))
+        .context("attendance status is missing")?;
+    ensure!(
+        matches!(status, 10 | 15 | 20 | 30 | 40 | 50 | 80 | 90 | 100),
+        "unknown attendance status {status}"
+    );
+    Ok(status)
+}
+fn status_title(status: u64) -> &'static str {
+    match status {
+        10 => "Registered",
+        15 => "Payment Pending",
+        20 => "Invited",
+        30 => "Attended",
+        40 => "Engaged",
+        50 => "Waitlisted",
+        80 => "Removed",
+        90 => "Cancelled",
+        100 => "Did Not Attend",
+        _ => "Unknown",
+    }
+}

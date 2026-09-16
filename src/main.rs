@@ -32,6 +32,16 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Discover existing organisations.
+    Organisations {
+        #[command(subcommand)]
+        command: catalog::CatalogCommand,
+    },
+    /// Discover existing events.
+    Events {
+        #[command(subcommand)]
+        command: catalog::CatalogCommand,
+    },
     /// Preview and execute targeted label/consent changes.
     Batch {
         #[command(subcommand)]
@@ -220,6 +230,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Organisations { command } => catalog::run_simple(command, "organisations")?,
+        Commands::Events { command } => catalog::run_simple(command, "events")?,
         Commands::Batch { command } => batch::run(command)?,
         Commands::Labels { command } => catalog::run_simple(command, "labels")?,
         Commands::Consents { command } => catalog::run_simple(command, "consents")?,

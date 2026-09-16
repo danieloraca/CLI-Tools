@@ -135,6 +135,26 @@ Each write uses a single-contact Gecko add/remove action, so unrelated labels an
 
 Keep the private batch journal. A completed rerun makes no API requests. On interruption, completed contacts stay recorded. For a pending contact, inspect Gecko after any queued action finishes: if the desired state is confirmed, add its ID to `completed` with `{"verified": true}` and clear `pending`; if the action definitely did not run, only clear `pending`. If uncertain, leave it pending. Rerun with the original operation and IDs. Stop other processes and back up the journal before manual reconciliation. `*.batch-state.json` and its lock are ignored by Git; keep custom journal names out of version control yourself.
 
+## Organisation and event membership
+
+```sh
+cargo run -- organisations list
+cargo run -- events list
+cargo run -- batch organisation-add --organisation-id 3 --contact-id 101 \
+  --profile-id YOUR_DEV_PROFILE_ID --journal organisation.batch-state.json
+cargo run -- batch event-add --event-id 8 --status registered \
+  --scenario-state admissions.apply-state.json --profile-id YOUR_DEV_PROFILE_ID \
+  --journal event.batch-state.json
+```
+
+These use the same preview-first targeting, locks and progress journals as label/consent changes. Add `--execute` to submit. Destinations must already exist; membership commands do not create or delete shared organisations/events. Existing organisation links and active event attendances are preserved. An inactive attendance (removed, cancelled, did not attend) is reactivated using the requested status.
+
+`events list` includes `type` and `parent_id`. Choose a parent event or concrete session time; session containers (type 20) are rejected before any write because Gecko can redirect them to another ID.
+
+Event `--status` accepts `registered` (default), `invited`, `attended` or `waitlisted`. Gecko may assign a different status, such as waitlisted when the event is full. Both the journal and JSON `results` record the actual status, its title, the requested status, and `matches_requested`. Preview includes the current state. The returned membership ID and its contact/destination are checked on readback before success is recorded. Existing active attendances keep their current status; this command does not downgrade an attended contact back to registered.
+
+For manual reconciliation of an event journal, record the observed membership ID and actual status in the completed entry; never substitute the requested status without checking Gecko. An uncertain membership write remains pending and is not submitted again automatically.
+
 ## Test-scenario builder
 
 Generate a scenario offline, without credentials or API requests:

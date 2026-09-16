@@ -101,3 +101,24 @@ Original reviewer report:
 > BATCH-01 resolved: unsupported command/removal path are gone. Label addition and consent grant/revoke retain supported payloads and recovery. No remaining findings in this focused follow-up.
 
 Owner disposition: accepted. Step 3 complete with 89 tests, formatting and strict Clippy passing.
+
+## Step 4 — source review, pass 1
+
+Target: baseline `eb466f2`, manifest SHA-256 `e846ac9558c71231a7a8944a9aea57d1913f0032a2846547da95c926007bab5d`.
+
+Original reviewer report:
+
+> P2 MEMBER-01: A session container (type 20) can redirect registration to its child session-time ID, leaving pending after a successful write when readback uses the original ID. Reject containers or resolve/bind the concrete destination before preview. Discovery should expose type and parent ID.
+> No further findings in targeting, status readback, preservation or recovery. Read-only local contract inspection.
+
+Owner disposition: accepted. Session containers, missing types and unknown types fail in destination preflight; event discovery includes type/parent_id. Added a zero-write regression. Initial 93 tests and strict Clippy passed.
+
+## Step 4 — source review, pass 2
+
+Target manifest SHA-256 `fdf88521b3a03871ac02fd8af3dc43862b1d8c155850b4fac9a908ef405dc5f7`.
+
+Original reviewer report:
+
+> MEMBER-01 resolved: session containers and missing/unknown types rejected in preflight; discovery exposes type/parent_id, with zero-write coverage. No remaining findings in this focused follow-up.
+
+Owner disposition: accepted. Step 4 complete with 94 tests, formatting and strict Clippy passing.
