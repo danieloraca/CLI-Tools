@@ -91,6 +91,21 @@ Use `cargo run -- login` if the saved login token has expired.
 
 Profile selection, menu, and contacts screens show their controls in the bottom-right legend panel.
 
+## Fields and exports
+
+```sh
+cargo run -- fields list
+cargo run -- contacts --columns id,email,field:93 --json
+cargo run -- contacts --search 'example.test' --csv --all --output contacts.csv
+cargo run -- contacts --columns id,full_name,field:93 --plain
+```
+
+`fields list` prints IDs, labels, types, required/sensitive flags and available option metadata. Custom columns use `field:ID`, independent of the UI's six configured list columns. JSON preserves Gecko's typed `value` (numbers, booleans, objects, arrays and null); sensitive values remain masked. The `phone` and `last_chat_message` aliases also read actual field IDs, even outside the UI list configuration. An ambiguous field type requires an explicit `field:ID`; an absent type yields null. Built-in columns are `id`, `full_name`, `email`, `phone`, `created_at`, `last_chat_message` and `labels`.
+
+Exports use the requested page unless `--all` is set. `--all` starts at page 1, continues through server page-size caps, checks for repeated IDs and stops on errors or changed result counts. Exports are buffered up to `--max-rows` (default 100,000, maximum 1,000,000); exceeding that limit is an error, so narrow the query or raise it explicitly. Results are not a server snapshot: run against stable development data for repeatable exports.
+
+CSV quotes every cell, including embedded quotes, commas and newlines. Arrays/objects use JSON text inside a cell and null is an empty cell. Export flags select noninteractive output, defaulting to JSON unless `--csv` or `--plain` is supplied. No output is written until the full export succeeds. `--output` publishes a new private file atomically and never overwrites an existing file. Without it, completed output goes to stdout.
+
 ## Test-scenario builder
 
 Generate a scenario offline, without credentials or API requests:

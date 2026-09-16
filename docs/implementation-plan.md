@@ -22,8 +22,8 @@ Each implementation step gets focused tests, formatting, strict Clippy, an indep
 | --- | --- | --- |
 | 0 | Save and review this plan | Complete |
 | 1 | Server-side search, field/label/date filters, saved filter selection, sorting, JSON output | Complete |
-| 2 | Field catalog, configurable export columns, CSV and explicit all-page export | In progress |
-| 3 | Targeted bulk label and consent changes with preview and resumable progress | Pending |
+| 2 | Field catalog, configurable export columns, CSV and explicit all-page export | Complete |
+| 3 | Targeted bulk label and consent changes with preview and resumable progress | In progress |
 | 4 | Add selected contacts to existing organisations/events | Pending |
 | 5 | Verify a recorded scenario against its expected values/resources | Pending |
 | 6 | Preview and clean up resources recorded as created by a scenario run | Pending |
@@ -84,3 +84,5 @@ Verify preview has zero writes, only recorded IDs are deleted in dependency orde
 ## Completion record
 
 Step 0: local commit `4d70704`. Step 1: 74 tests, formatting and strict Clippy pass; all reviewer findings resolved. Staging smoke check stopped at expired-token HTTP 401 before querying contacts. Boolean and zero/empty equality are explicitly rejected to avoid Gecko's unsupported comparison semantics.
+
+Step 1 commit: `369513d`. Step 2: 80 tests, formatting and strict Clippy pass; EXPORT-01 resolved. Exports buffer at most the explicit row limit (100,000 by default), so an oversized export fails instead of silently truncating.

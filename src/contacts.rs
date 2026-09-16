@@ -39,15 +39,26 @@ impl ContactService {
         page: u32,
         per_page: u32,
     ) -> Result<ContactsPage> {
+        let api = crate::gecko::GeckoApi::new(&self.base_url, tokens, session)?;
+        let fields = api.collection("fields", &[("field_type", "contact".into())])?;
+        let (payload, pagination) = self.read_page(&api, &fields, page, per_page, false)?;
+        parse_page(payload, pagination, &fields)
+    }
+
+    pub fn read_page(
+        &self,
+        api: &crate::gecko::GeckoApi,
+        fields: &[Value],
+        page: u32,
+        per_page: u32,
+        custom: bool,
+    ) -> Result<(Value, ContactsPagination)> {
         self.query.validate()?;
         anyhow::ensure!(
             page > 0 && (1..=500).contains(&per_page),
             "page must be positive and per-page must be 1..500"
         );
-        let api = crate::gecko::GeckoApi::new(&self.base_url, tokens, session)?;
-        let fields = api.collection("fields", &[("field_type", "contact".into())])?;
-        self.query.validate_fields(&fields)?;
-        let columns = ContactColumns::from_metadata(&fields);
+        self.query.validate_fields(fields)?;
         if let Some(id) = self.query.saved_filter {
             let filter = api.request(reqwest::Method::GET, &format!("filters/{id}"), &[], None)?;
             anyhow::ensure!(
@@ -61,7 +72,15 @@ impl ContactService {
             ("label_rfields", LABEL_RFIELDS.to_string()),
             ("per_page", per_page.to_string()),
             ("page", page.to_string()),
-            ("include", "labels".to_string()),
+            (
+                "include",
+                if custom {
+                    "labels,current_values:1000,current_values.field"
+                } else {
+                    "labels"
+                }
+                .to_string(),
+            ),
         ];
         query.extend(self.query.parameters());
         let conditions = self.query.conditions();
@@ -74,7 +93,7 @@ impl ContactService {
         let (headers, payload) = api.response(method, endpoint, &query, body)?;
 
         let pagination = ContactsPagination::from_response(&headers, &payload, page, per_page);
-        parse_contacts_page_with_pagination(payload, pagination, &columns)
+        Ok((payload, pagination))
     }
 
     pub fn contact_detail(
@@ -100,6 +119,14 @@ impl ContactService {
 
         parse_contact_detail(payload)
     }
+}
+
+pub fn parse_page(
+    payload: Value,
+    pagination: ContactsPagination,
+    fields: &[Value],
+) -> Result<ContactsPage> {
+    parse_contacts_page_with_pagination(payload, pagination, &ContactColumns::from_metadata(fields))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -501,7 +528,7 @@ fn format_field_string(value: &str, data_type: &str) -> String {
     }
 }
 
-fn truthy(value: Option<&Value>) -> bool {
+pub fn truthy(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
         Some(Value::Number(value)) => value.as_u64().unwrap_or(0) > 0,
@@ -510,7 +537,7 @@ fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-fn contact_items(payload: &Value) -> Option<&Vec<Value>> {
+pub fn contact_items(payload: &Value) -> Option<&Vec<Value>> {
     if let Value::Array(items) = payload {
         return Some(items);
     }
@@ -553,7 +580,7 @@ fn parse_labels(value: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+pub fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let widths = headers
         .iter()
         .enumerate()

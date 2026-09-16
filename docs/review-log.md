@@ -59,3 +59,24 @@ Original reviewer report:
 > QUERY-01 resolved: decimal contains values now normalize to text, with regression coverage. No unresolved findings. Verified manifest/file hashes; read-only inspection.
 
 Owner disposition: accepted. Step 1 complete with 74 passing tests, formatting and strict Clippy.
+
+## Step 2 — source review, pass 1
+
+Target: baseline `369513d`, manifest SHA-256 `ae550fce44465fb91fca5a2efa5d298251c084df9db87b6a11664a6129f8fb95`.
+
+Original reviewer report:
+
+> P2 EXPORT-01: Built-in phone/last_chat_message exports reuse the TUI's six-column projection, silently yielding empty strings for populated fields omitted from that configuration. Resolve aliases through actual field IDs/current values; require field:ID for ambiguity and cover an omitted populated field.
+> No further supported findings in typed values, canonical field mapping, masking, pagination or atomic file publication. Read-only local source inspection.
+
+Owner disposition: accepted. Aliases now resolve the actual field, prefer a unique configured choice when multiple exist, reject ambiguity and return null for absent types. Added a regression with populated fields outside the UI list. Initial 79 tests and strict Clippy passed.
+
+## Step 2 — source review, pass 2
+
+Target manifest SHA-256 `a3823ab3ccc1202629bb16caacc17d2422b1e515a517da1abb3b873a97e98637`.
+
+Original reviewer report:
+
+> EXPORT-01 resolved: aliases read actual values, preserve masking, return null for absent types and reject ambiguity. Regression covers populated fields omitted from the UI list. No remaining findings in this focused follow-up.
+
+Owner disposition: accepted. Step 2 complete with 80 tests, formatting and strict Clippy passing.

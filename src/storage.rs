@@ -67,6 +67,29 @@ pub fn write_private_atomic(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Publish a complete private file without replacing an existing destination.
+pub fn create_private_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    let mut temporary_name = path.as_os_str().to_os_string();
+    temporary_name.push(format!(
+        ".{}-{}.export-tmp",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    ));
+    let temporary = TemporaryFile(PathBuf::from(temporary_name));
+    write_private_atomic(&temporary.0, data)?;
+    // A hard link atomically creates the destination and refuses files/symlinks already there.
+    fs::hard_link(&temporary.0, path)
+        .with_context(|| format!("cannot create {}; choose a new output file", path.display()))?;
+    #[cfg(unix)]
+    File::open(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?
+    .sync_all()?;
+    Ok(())
+}
+
 struct TemporaryFile(PathBuf);
 impl Drop for TemporaryFile {
     fn drop(&mut self) {

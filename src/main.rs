@@ -4,6 +4,7 @@ mod app_identity;
 mod auth;
 mod catalog;
 mod contacts;
+mod export;
 mod gecko;
 mod profiles;
 mod progress;
@@ -30,6 +31,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Discover contact fields and their IDs/types/choices.
+    Fields {
+        #[command(subcommand)]
+        command: catalog::CatalogCommand,
+    },
     /// Discover saved contact filters.
     Filters {
         #[command(subcommand)]
@@ -188,6 +194,8 @@ enum Commands {
         json: bool,
         #[command(flatten)]
         query: query::ContactQuery,
+        #[command(flatten)]
+        export: export::ExportArgs,
     },
 }
 
@@ -196,6 +204,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Fields { command } => catalog::run_fields(command)?,
         Commands::Filters { command } => catalog::run_filters(command)?,
         Commands::Scenario { command } => scenarios::run(command)?,
         Commands::Login {
@@ -343,6 +352,7 @@ fn main() -> Result<()> {
             plain,
             json,
             query,
+            export,
         } => {
             let token_file = app_token_file
                 .or(token_file)
@@ -356,7 +366,18 @@ fn main() -> Result<()> {
             let app_api_base_url = required_app_api_base_url(app_api_base_url)?;
 
             query.validate()?;
-            if plain || json {
+            if export.active() {
+                export::run(
+                    &app_api_base_url,
+                    &tokens,
+                    &session,
+                    query,
+                    &export,
+                    page,
+                    per_page,
+                    plain,
+                )?;
+            } else if plain || json {
                 let contacts = contacts::ContactService::new(&app_api_base_url)?
                     .with_query(query)?
                     .list_contacts(&tokens, &session, page, per_page)?;

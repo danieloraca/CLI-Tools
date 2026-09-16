@@ -48,3 +48,23 @@ pub fn run_filters(command: CatalogCommand) -> Result<()> {
     );
     Ok(())
 }
+
+pub fn run_fields(command: CatalogCommand) -> Result<()> {
+    let CatalogCommand::List(connection) = command;
+    let fields = connection.open()?.collection(
+        "fields",
+        &[
+            ("field_type", "contact".into()),
+            ("include", "option".into()),
+        ],
+    )?;
+    let rows: Vec<_> = fields.iter().map(|f| serde_json::json!({
+        "id":f["id"], "label":f["label"], "type":f["type"], "data_type":f["data_type"],
+        "required":f["required"], "is_sensitive":f["is_sensitive"], "option":f["option"], "values":f["values"]
+    })).collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({"fields":rows}))?
+    );
+    Ok(())
+}
