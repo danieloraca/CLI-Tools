@@ -26,7 +26,7 @@ Each implementation step gets focused tests, formatting, strict Clippy, an indep
 | 3 | Targeted bulk label and consent changes with preview and resumable progress | Complete |
 | 4 | Add selected contacts to existing organisations/events | Complete |
 | 5 | Verify a recorded scenario against its expected values/resources | Complete |
-| 6 | Preview and clean up resources recorded as created by a scenario run | In progress |
+| 6 | Preview and clean up resources recorded as created by a scenario run | Complete |
 
 ### 1. Search, filters, and JSON
 
@@ -70,6 +70,8 @@ Verify exact success, missing contact, changed field, duplicate/missing email ca
 
 Before checking apply state, acquire the same exclusive apply lock and retain it through cleanup reads, deletes, deletion checkpoints and lifecycle updates. This excludes apply, cleanup and other scenario lifecycle operations on that journal from running concurrently. Track deletion progress separately from apply checkpoints; preserve the original creation evidence. Treat already-missing resources as complete after an authenticated read. Record uncertain delete outcomes and require reconciliation before continuing. Prevent apply from recreating a cleaned-up run accidentally.
 
+Contract/provenance decision: new successful create responses record immutable creation time and optional UUID. Existing journals remain readable, but live resources without sufficient evidence are retained (contacts require UUID). Group deletion checks unchanged permissions/name, zero users and no contact-field access-rule reference. Custom field deletion is retained for manual handling: `Field::delete` silently detaches form/integration references and the available API cannot prove the complete dependency set under current access. This narrows only automatic deletion of shared custom fields; exact contact cleanup, unused groups, previews, recovery and lifecycle protection remain implemented.
+
 Verify preview has zero writes, only recorded IDs are deleted in dependency order, wrong target/edited fixture is rejected, partial deletion resumes safely, missing resources are handled, cleanup cannot delete unrelated or reused resources, and a concurrent apply/cleanup is rejected before any API mutation.
 
 ## Shared decisions and constraints
@@ -94,3 +96,7 @@ Step 2 commit: `e5fa2fa`. Step 3: 89 tests, formatting and strict Clippy pass; B
 Step 3 commit: `eb466f2`. Step 4: 94 tests, formatting and strict Clippy pass; MEMBER-01 resolved. Session containers require selection of a concrete session-time ID; actual attendance outcomes are recorded.
 
 Step 4 commit: `118f42f`. Step 5: 100 tests, formatting and strict Clippy pass; independent review found no supported defects.
+
+Step 5 commit: `160fad8`. Step 6: 110 tests, formatting, strict Clippy and CLI help pass; independent review found no actionable defects. Creation evidence, contact/group cleanup, retention decisions, separate deletion checkpoints and lifecycle recovery are complete. Custom fields and older resources without sufficient creation evidence are retained as specified above. The cleanup commit also records this final delivery reconciliation.
+
+All six delivery steps are implemented and independently reviewed, with supported findings resolved before their local commits. README command examples and recovery instructions match the delivered interfaces. Verification used local mock APIs; the expired staging token prevented live smoke verification, and no staging mutations were attempted. All work remains local with no push or pull request.

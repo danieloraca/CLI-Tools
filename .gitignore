@@ -8,3 +8,5 @@ Cargo.lock
 
 *.batch-state.json
 *.batch-state.json.lock
+
+*.apply-state.json.cleanup.json

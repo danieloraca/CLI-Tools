@@ -97,6 +97,12 @@ pub(super) fn validate_checkpoints(state: &State, scenario: &Scenario) -> Result
         allowed.insert(format!("contact:{}", contact.key));
         allowed.insert(format!("populated:{}", contact.key));
     }
+    for key in state.creation.keys() {
+        ensure!(
+            state.completed.contains_key(key) && !key.starts_with("populated:"),
+            "creation evidence has no matching creation checkpoint"
+        );
+    }
     let mut contacts = BTreeSet::new();
     for (key, id) in &state.completed {
         ensure!(
@@ -154,6 +160,15 @@ pub(super) fn verify(api: &GeckoApi, state: &State, scenario: &Scenario) -> Resu
         expected_emails: email_counts(&expected),
         observed_emails: None,
     };
+    if state.lifecycle != apply::Lifecycle::Active {
+        report.issue(
+            "run",
+            None,
+            "incomplete",
+            "cleanup has started for this scenario",
+        );
+        return Ok(report);
+    }
     if let Some(pending) = &state.pending {
         report.issue(
             pending,

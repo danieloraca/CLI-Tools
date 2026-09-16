@@ -217,7 +217,7 @@ The read-only group is created without assigning users. Assign a development tes
 
 ### Reruns and interrupted runs
 
-Apply checkpoints successful field, group and contact IDs in `admissions.apply-state.json`. Keep this file: rerunning the same fixture against the same target skips completed operations; a fully completed run performs no API requests. A filesystem lock prevents two processes from using the same journal concurrently. Journals contain a SHA-256 fixture fingerprint and resource IDs, never tokens or contact data. Default journal/checkpoint filenames are ignored by Git.
+Apply checkpoints successful field, group and contact IDs in `admissions.apply-state.json`. Keep this file: rerunning the same fixture against the same target skips completed operations; a fully completed run performs no API requests. A filesystem lock prevents two processes from using the same journal concurrently. Journals contain a SHA-256 fixture fingerprint, resource IDs and optional immutable creation identity (creation time/UUID), never tokens or contact values. Default journal/checkpoint filenames are ignored by Git.
 
 Use `--state-file PATH` for a separate target/run. A journal refuses a changed fixture, API URL, account or profile. Each fresh journal represents a new run and can create another set of resources; deterministic generation does not make separate journals globally idempotent. Keep custom-named journals out of version control yourself.
 
@@ -225,7 +225,7 @@ Before every write the journal records `pending`. If a request fails, times out,
 
 To recover, stop other apply processes, back up the journal, and inspect the target in Gecko. The journal's `pending` key identifies the operation (`field:KEY`, `group:KEY`, `contact:KEY`, or `populated:KEY`). For a confirmed successful operation, add its resource ID as a string under that key in `completed`, then set `pending` to `null`. For a contact's final update, use the existing contact ID and mark it complete only after checking the final values. If the operation definitely did not happen, clear `pending` without adding a completed entry. If its outcome is unknown, retain `pending` until resolved. Rerun the same command after reconciliation.
 
-If a crash leaves a `.tmp` checkpoint, compare it with the main journal and Gecko before promoting or removing it. Do not discard a journal simply to retry: that starts another run. Resource IDs are also available for manual cleanup in Gecko; automated deletion is not included.
+If a crash leaves a `.tmp` checkpoint, compare it with the main journal and Gecko before promoting or removing it. Do not discard a journal simply to retry: that starts another run. Older journals without creation evidence remain readable; their existing resources require manual ownership checks before removal.
 
 ### Verify a recorded scenario
 
@@ -236,6 +236,24 @@ cargo run -- scenario verify admissions.json --profile-id YOUR_DEV_PROFILE_ID
 Verification uses the matching apply journal (`--state-file` overrides it), checks the fixture fingerprint and API/account/profile, and holds its lifecycle lock. It makes only read requests. The JSON report checks recorded contacts, actual standard/custom field IDs and types, custom field labels, group names/permissions, and duplicate/missing email counts. Mandatory Gecko permissions are allowed alongside fixture permissions.
 
 Missing resources, changed values, incomplete checkpoints, uncertain writes, and values that are masked or inaccessible make verification fail with a nonzero exit. Mismatch reports identify resource/field keys but omit contact values; restricted values are **unverified**, never counted as passed. Numeric values tolerate database decimal strings while retaining exact integer comparisons. Verification does not alter the journal or repair the data.
+
+### Clean up a recorded run
+
+```sh
+cargo run -- scenario cleanup admissions.json --profile-id YOUR_DEV_PROFILE_ID
+# After reviewing the exact IDs/actions, execute the same cleanup:
+cargo run -- scenario cleanup admissions.json --profile-id YOUR_DEV_PROFILE_ID --execute
+```
+
+Cleanup previews only IDs recorded as created by the matching fixture/run. It never searches by name, email or label. Creation time and UUID (required for contacts) must match the evidence captured by the create response. Older journals, missing identity evidence and replaced/reused resources are retained with a reason. Already-missing resources are confirmed through authenticated reads and recorded without a DELETE request.
+
+Generated contacts are deleted first, using Gecko's normal deletion endpoint, which also removes their related responses, memberships and other contact data. Created custom groups can then be deleted only when their name/permissions remain unchanged, they have no users, and no contact-field access rule uses them. Shared organisations/events and standard fields are never deletion targets. Custom fields are retained: Gecko's field deletion can detach form and integration references without a complete guarded dependency check, so the CLI does not automate that deletion.
+
+The original creation journal is preserved. Cleanup progress is stored separately as `APPLY_STATE.cleanup.json`, bound to its target, fixture, run and creation checkpoints. Both journals are protected by the same exclusive lifecycle lock. Once execution starts, apply and batch selection refuse that run; use a fresh journal to create a new run. `cleanup_started` means cleanup was executed but resources remain retained; `cleaned` means all recorded resources are confirmed absent.
+
+The journal lock coordinates CLI processes using that journal; it does not block edits through Gecko. Keep the scenario resources stable while cleanup runs, since ownership and dependency reads are not an atomic server transaction with deletion.
+
+Each deletion is marked pending before submission and confirmed by a subsequent read. If a DELETE outcome is uncertain, rerunning checks that exact ID: confirmed absence is reconciled, but an existing resource is never deleted again automatically. For a still-pending existing resource, inspect Gecko, stop other processes and back up both journals before clearing the cleanup journal's `pending` entry only when the failed deletion definitely did not occur. If the outcome remains uncertain, leave it pending. Do not erase either journal to retry. A preview can inspect an uncertain deletion's absence; only `--execute` persists that reconciliation.
 
 ## Verification
 

@@ -103,12 +103,16 @@ impl GeckoApi {
         let response = request.send().context("Gecko API request failed")?;
         let status = response.status();
         let headers = response.headers().clone();
-        if status.is_success() {
+        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
             crate::app_identity::validate_account(response.headers(), &identity.account_id)?;
         }
-        let payload: Value = response
-            .json()
-            .with_context(|| format!("Gecko API returned non-JSON with HTTP {status}"))?;
+        let bytes = response.bytes().context("cannot read Gecko API response")?;
+        let payload: Value = if bytes.is_empty() && status.is_success() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("Gecko API returned non-JSON with HTTP {status}"))?
+        };
         if !status.is_success() {
             let message = ["error", "message", "Error", "Message"]
                 .iter()

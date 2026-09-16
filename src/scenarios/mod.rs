@@ -1,4 +1,5 @@
 mod apply;
+mod cleanup;
 mod fixture;
 mod verify;
 
@@ -16,6 +17,8 @@ pub enum ScenarioCommand {
     Apply(apply::ApplyArgs),
     /// Verify recorded resources and values without changing Gecko.
     Verify(apply::ApplyArgs),
+    /// Preview or remove recorded owned resources; retain shared/unverifiable resources.
+    Cleanup(cleanup::CleanupArgs),
 }
 
 #[derive(Debug, Args)]
@@ -78,6 +81,11 @@ pub fn run(command: ScenarioCommand) -> Result<()> {
                 io::stdout().lock().write_all(&data)?;
             }
             Ok(())
+        }
+        ScenarioCommand::Cleanup(args) => {
+            let scenario: fixture::Scenario = serde_json::from_slice(&fs::read(&args.run.fixture)?)
+                .context("invalid scenario fixture")?;
+            cleanup::run(&args, &scenario)
         }
         ScenarioCommand::Verify(args) => {
             let scenario: fixture::Scenario = serde_json::from_slice(&fs::read(&args.fixture)?)

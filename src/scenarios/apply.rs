@@ -42,6 +42,49 @@ pub(super) struct State {
     pub(super) completed: BTreeMap<String, String>,
     /// Written before each mutation. An unknown outcome must never be retried automatically.
     pub(super) pending: Option<String>,
+    #[serde(default)]
+    pub(super) creation: BTreeMap<String, CreationEvidence>,
+    #[serde(default)]
+    pub(super) lifecycle: Lifecycle,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Lifecycle {
+    #[default]
+    Active,
+    CleanupStarted,
+    Cleaned,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CreationEvidence {
+    pub created_at: u64,
+    pub uuid: Option<String>,
+}
+impl CreationEvidence {
+    pub fn from_resource(resource: &Value) -> Option<Self> {
+        let value = &resource["created_at"];
+        let created_at = value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|v| v.parse().ok()))
+            .filter(|n| *n > 0)?;
+        let uuid = resource["uuid"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        Some(Self { created_at, uuid })
+    }
+    pub fn matches(&self, resource: &Value) -> bool {
+        Self::from_resource(resource).is_some_and(|actual| {
+            actual.created_at == self.created_at
+                && self
+                    .uuid
+                    .as_ref()
+                    .is_none_or(|id| actual.uuid.as_ref() == Some(id))
+        })
+    }
 }
 
 pub fn run(args: &ApplyArgs, scenario: Scenario) -> Result<()> {
@@ -77,6 +120,10 @@ pub fn run(args: &ApplyArgs, scenario: Scenario) -> Result<()> {
         .unwrap_or_else(|| args.fixture.with_extension("apply-state.json"));
     let _lock = lock_state(&path)?;
     let mut state = load_state(&path, target, &scenario)?;
+    ensure!(
+        state.lifecycle == Lifecycle::Active,
+        "cleanup has started for this run; use a new journal for a new run"
+    );
     ensure!(
         state.pending.is_none(),
         "operation {:?} has an uncertain outcome; inspect Gecko and reconcile {} before retrying (see README recovery instructions)",
@@ -121,6 +168,8 @@ pub(super) fn load_state(path: &Path, target: Target, scenario: &Scenario) -> Re
             ),
             completed: BTreeMap::new(),
             pending: None,
+            creation: BTreeMap::new(),
+            lifecycle: Lifecycle::Active,
         }),
         Err(error) => Err(error).context("cannot read apply state"),
     }
@@ -308,6 +357,11 @@ fn mutation(
             "contact update returned an unexpected ID; inspect the server before retrying"
         );
     }
+    if !key.starts_with("populated:")
+        && let Some(evidence) = CreationEvidence::from_resource(resource)
+    {
+        state.creation.insert(key.into(), evidence);
+    }
     state.completed.insert(key.into(), id.clone());
     state.pending = None;
     save_state(path, state)?;
@@ -337,10 +391,21 @@ fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn save_state(path: &Path, state: &State) -> Result<()> {
+pub(super) fn save_state(path: &Path, state: &State) -> Result<()> {
     let temporary = suffix_path(path, ".tmp");
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary)
-        .with_context(|| format!("cannot create state checkpoint {}; inspect any leftover checkpoint before removing it", temporary.display()))?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).with_context(|| {
+        format!(
+            "cannot create state checkpoint {}; inspect any leftover checkpoint before removing it",
+            temporary.display()
+        )
+    })?;
     serde_json::to_writer_pretty(&mut file, state)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
@@ -368,6 +433,10 @@ pub(crate) fn recorded_contacts(path: &Path, target: &Target) -> Result<Vec<Stri
     ensure!(
         state.pending.is_none(),
         "scenario journal has an uncertain operation; reconcile it first"
+    );
+    ensure!(
+        state.lifecycle == Lifecycle::Active,
+        "cleanup has started for this scenario; it cannot be used as a batch source"
     );
     let mut ids = BTreeSet::new();
     for (key, id) in &state.completed {

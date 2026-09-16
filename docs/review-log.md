@@ -132,3 +132,13 @@ Original reviewer report:
 > No supported findings. Reviewed fixture/journal binding, checkpoint validation, field mapping, permissions, typed values, email counts, restricted-value handling and shared HTTP errors against local contracts. Verified manifest/file hashes and git diff --check; no live operations. Tests/Clippy are owner-run evidence.
 
 Owner disposition: accepted. Step 5 complete with 100 tests, formatting and strict Clippy passing.
+
+## Step 6 — source review
+
+Target: baseline `160fad8`, manifest SHA-256 `41613586ad5385094e79ea06e881f7f230b7b7cde8a94020e98e89ff8d1f61ac`.
+
+Original reviewer report:
+
+> No actionable findings. Verified baseline and all 29 frozen file hashes; git diff --check passes. Reviewed ownership checks, separate deletion checkpoints, pending-delete reconciliation, lifecycle locking/refusal, legacy journals and HTTP response handling. Backend source supports create-response UUID/timestamps, authenticated 404 account headers and contact-field-group pagination/response shape. Read-only source review with no live operations; the 110 passing tests are owner-reported. Local journal locks do not serialize unrelated edits made through Gecko.
+
+Owner disposition: accepted. Step 6 complete with 110 tests, formatting, strict Clippy and cleanup CLI help passing. Added a README clarification that the journal lock coordinates local CLI processes and does not block Gecko UI edits; no source changes after review. Completed the plan's final reconciliation. Automatic custom-field deletion remains explicitly excluded because Gecko cannot provide a complete guarded dependency check; retention and manual handling are documented.

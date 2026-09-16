@@ -351,3 +351,29 @@ fn mismatched_app_tokens_are_rejected_before_requesting_fields() {
     );
     assert!(!args.state_file.unwrap().exists());
 }
+
+#[test]
+fn captures_creation_identity_without_replacing_it_with_update_metadata() {
+    let dir = Directory::new();
+    let server = Server::with_identity(vec![
+        (200, fields()),
+        (200, json!({"fields":[]})),
+        (
+            201,
+            json!({"contact":{"id":101,"uuid":"created-contact","created_at":1000}}),
+        ),
+        (
+            200,
+            json!({"contact":{"id":101,"uuid":"created-contact","created_at":9999}}),
+        ),
+    ]);
+    let args = args(&dir, &server.url);
+    run(&args, scenario(1)).unwrap();
+    server.finish();
+    let state: State =
+        serde_json::from_slice(&fs::read(args.state_file.unwrap()).unwrap()).unwrap();
+    let evidence = state.creation.values().next().unwrap();
+    assert_eq!(evidence.created_at, 1000);
+    assert_eq!(evidence.uuid.as_deref(), Some("created-contact"));
+    assert_eq!(state.creation.len(), 1);
+}
