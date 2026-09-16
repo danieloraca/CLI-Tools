@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AppSession {
+    /// Account service ProfileId, used to select a profile and target scenarios.
     pub profile_id: String,
+    /// Account service AccountId / app account UUID, not the numeric routing ID.
     pub account_id: String,
     pub account_name: String,
     pub app_description: String,
+    /// Selected profile ExternalId / app user auth_id, not the login user's ID.
     pub user_id: String,
     pub redirect_url: String,
 }

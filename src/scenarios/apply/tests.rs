@@ -27,14 +27,14 @@ fn fields() -> Value {
 
 fn args(dir: &Directory, url: &str) -> ApplyArgs {
     let selected = session::AppSession {
-        account_id: "281".into(),
-        user_id: "2260".into(),
+        account_id: "test-account-uuid".into(),
+        user_id: "app-user-1".into(),
         profile_id: "p-1".into(),
         account_name: "Development".into(),
         app_description: "Forms".into(),
         redirect_url: "https://example.test".into(),
     };
-    let tokens = crate::test_support::app_tokens("p-1");
+    let tokens = crate::test_support::app_tokens("app-user-1");
     let session_file = dir.path("session.json");
     let app_token_file = dir.path("tokens.json");
     fs::write(&session_file, serde_json::to_vec(&selected).unwrap()).unwrap();
@@ -52,7 +52,7 @@ fn args(dir: &Directory, url: &str) -> ApplyArgs {
 #[test]
 fn applies_real_payloads_with_duplicate_preservation_and_noop_reruns() {
     let dir = Directory::new();
-    let server = Server::new(vec![
+    let server = Server::with_identity(vec![
         (200, fields()),
         (200, json!({"fields": []})),
         (201, json!({"field": {"id": 91}})),
@@ -81,7 +81,9 @@ fn applies_real_payloads_with_duplicate_preservation_and_noop_reruns() {
     scenario.fields.swap(0, 2);
     scenario.validate().unwrap();
     run(&args, scenario.clone()).unwrap();
-    let requests = server.finish();
+    let all_requests = server.finish();
+    assert!(all_requests[0].line.starts_with("GET /auth/check?"));
+    let requests = &all_requests[1..];
     assert_eq!(requests.len(), 8);
     assert!(requests[0].line.contains("field_type=contact"));
     assert!(requests[1].line.contains("page=2"));
@@ -110,7 +112,7 @@ fn applies_real_payloads_with_duplicate_preservation_and_noop_reruns() {
         headers.contains(
             &format!(
                 "authorization: bearer {}",
-                crate::test_support::app_tokens("p-1").access_token
+                crate::test_support::app_tokens("app-user-1").access_token
             )
             .to_lowercase()
         )
@@ -128,7 +130,7 @@ fn applies_real_payloads_with_duplicate_preservation_and_noop_reruns() {
 #[test]
 fn ambiguous_write_keeps_prior_success_and_blocks_retry() {
     let dir = Directory::new();
-    let server = Server::new(vec![
+    let server = Server::with_identity(vec![
         (200, fields()),
         (200, json!({"fields": []})),
         (201, json!({"contact": {"id": 101}})),
@@ -138,7 +140,7 @@ fn ambiguous_write_keeps_prior_success_and_blocks_retry() {
     let scenario = scenario(1);
     let error = run(&args, scenario.clone()).unwrap_err();
     assert!(format!("{error:#}").contains("500"));
-    assert_eq!(server.finish().len(), 4);
+    assert_eq!(server.finish().len(), 5);
     let state: State =
         serde_json::from_slice(&fs::read(args.state_file.as_ref().unwrap()).unwrap()).unwrap();
     assert_eq!(state.completed["contact:contact_00001"], "101");
@@ -162,7 +164,7 @@ fn ambiguous_write_keeps_prior_success_and_blocks_retry() {
 #[test]
 fn missing_email_is_never_created_with_a_temporary_email() {
     let dir = Directory::new();
-    let server = Server::new(vec![
+    let server = Server::with_identity(vec![
         (200, fields()),
         (200, json!({"fields": []})),
         (201, json!({"contact": {"id": 101}})),
@@ -174,7 +176,9 @@ fn missing_email_is_never_created_with_a_temporary_email() {
         .fields
         .insert("email".into(), Value::Null);
     run(&args, scenario).unwrap();
-    let requests = server.finish();
+    let all_requests = server.finish();
+    assert!(all_requests[0].line.starts_with("GET /auth/check?"));
+    let requests = &all_requests[1..];
     assert!(requests[2].body["fields"].get("field28").is_none());
     assert!(requests[3].body["fields"]["field28"].is_null());
 }
@@ -184,21 +188,21 @@ fn required_field_preflight_fails_before_any_writes() {
     let dir = Directory::new();
     let mut field_data = fields();
     field_data["fields"][1]["required"] = json!(1);
-    let server = Server::new(vec![(200, field_data), (200, json!({"fields": []}))]);
+    let server = Server::with_identity(vec![(200, field_data), (200, json!({"fields": []}))]);
     let args = args(&dir, &server.url);
     let mut scenario = scenario(1);
     scenario.contacts[0]
         .fields
         .insert("email".into(), Value::Null);
     assert!(format!("{:#}", run(&args, scenario).unwrap_err()).contains("profile requires email"));
-    assert_eq!(server.finish().len(), 2);
+    assert_eq!(server.finish().len(), 3);
     assert!(!args.state_file.unwrap().exists());
 }
 
 #[test]
 fn success_without_an_id_remains_pending() {
     let dir = Directory::new();
-    let server = Server::new(vec![
+    let server = Server::with_identity(vec![
         (200, fields()),
         (200, json!({"fields": []})),
         (201, json!({"contact": {}})),
@@ -208,7 +212,7 @@ fn success_without_an_id_remains_pending() {
         format!("{:#}", run(&args, scenario(1)).unwrap_err())
             .contains("without a usable resource ID")
     );
-    assert_eq!(server.finish().len(), 3);
+    assert_eq!(server.finish().len(), 4);
     let state: State =
         serde_json::from_slice(&fs::read(args.state_file.unwrap()).unwrap()).unwrap();
     assert_eq!(state.pending.as_deref(), Some("contact:contact_00001"));
@@ -238,7 +242,7 @@ fn profile_mismatch_and_concurrent_apply_fail_before_requests() {
 #[test]
 fn resuming_after_create_updates_the_existing_contact() {
     let dir = Directory::new();
-    let server = Server::new(vec![
+    let server = Server::with_identity(vec![
         (200, fields()),
         (200, json!({"fields": []})),
         (200, json!({"contact": {"id": 101}})),
@@ -249,7 +253,7 @@ fn resuming_after_create_updates_the_existing_contact() {
         args.state_file.as_ref().unwrap(),
         Target {
             base_url: server.url.clone(),
-            account_id: "281".into(),
+            account_id: "test-account-uuid".into(),
             profile_id: "p-1".into(),
         },
         &scenario,
@@ -260,14 +264,16 @@ fn resuming_after_create_updates_the_existing_contact() {
         .insert("contact:contact_00001".into(), "101".into());
     save_state(args.state_file.as_ref().unwrap(), &state).unwrap();
     run(&args, scenario).unwrap();
-    let requests = server.finish();
+    let all_requests = server.finish();
+    assert!(all_requests[0].line.starts_with("GET /auth/check?"));
+    let requests = &all_requests[1..];
     assert_eq!(requests[2].line, "POST /contacts/101 HTTP/1.1");
 }
 
 #[test]
 fn an_unexpected_update_id_is_not_checkpointed_as_complete() {
     let dir = Directory::new();
-    let server = Server::new(vec![
+    let server = Server::with_identity(vec![
         (200, fields()),
         (200, json!({"fields": []})),
         (201, json!({"contact": {"id": 101}})),
@@ -275,7 +281,7 @@ fn an_unexpected_update_id_is_not_checkpointed_as_complete() {
     ]);
     let args = args(&dir, &server.url);
     assert!(format!("{:#}", run(&args, scenario(1)).unwrap_err()).contains("unexpected ID"));
-    assert_eq!(server.finish().len(), 4);
+    assert_eq!(server.finish().len(), 5);
     let state: State =
         serde_json::from_slice(&fs::read(args.state_file.unwrap()).unwrap()).unwrap();
     assert_eq!(state.pending.as_deref(), Some("populated:contact_00001"));
@@ -285,10 +291,10 @@ fn an_unexpected_update_id_is_not_checkpointed_as_complete() {
 #[test]
 fn repeated_field_pages_fail_before_creating_resources() {
     let dir = Directory::new();
-    let server = Server::new(vec![(200, fields()), (200, fields())]);
+    let server = Server::with_identity(vec![(200, fields()), (200, fields())]);
     let args = args(&dir, &server.url);
     assert!(format!("{:#}", run(&args, scenario(1)).unwrap_err()).contains("pagination repeated"));
-    assert_eq!(server.finish().len(), 2);
+    assert_eq!(server.finish().len(), 3);
     assert!(!args.state_file.unwrap().exists());
 }
 
@@ -316,13 +322,14 @@ fn unsupported_zero_values_fail_before_any_api_call() {
 fn account_identity_must_be_confirmed_before_any_write() {
     for account in [None, Some("999")] {
         let dir = Directory::new();
-        let server = Server::with_account(vec![(200, fields())], account);
+        let server =
+            Server::with_account(vec![(200, crate::test_support::auth_identity())], account);
         let args = args(&dir, &server.url);
         let error = format!("{:#}", run(&args, scenario(1)).unwrap_err());
         assert!(error.contains("account"), "{error}");
         let requests = server.finish();
         assert_eq!(requests.len(), 1);
-        assert!(requests[0].line.starts_with("GET /fields?"));
+        assert!(requests[0].line.starts_with("GET /auth/check?"));
         assert!(!args.state_file.unwrap().exists());
     }
 }
@@ -332,7 +339,7 @@ fn mismatched_app_tokens_are_rejected_before_requesting_fields() {
     let dir = Directory::new();
     let args = args(&dir, "http://127.0.0.1:1");
     auth::persist_tokens(
-        &crate::test_support::app_tokens("p-2"),
+        &crate::test_support::app_tokens("app-user-2"),
         args.app_token_file.as_deref(),
     )
     .unwrap();
@@ -340,7 +347,7 @@ fn mismatched_app_tokens_are_rejected_before_requesting_fields() {
     assert!(
         error
             .to_string()
-            .contains("app token profile p-2 does not match saved profile p-1")
+            .contains("app token profile app-user-2 does not match saved app user app-user-1")
     );
     assert!(!args.state_file.unwrap().exists());
 }

@@ -42,6 +42,11 @@ pub(crate) struct Server {
 }
 
 impl Server {
+    pub(crate) fn with_identity(mut responses: Vec<(u16, Value)>) -> Self {
+        responses.insert(0, (200, auth_identity()));
+        Self::new(responses)
+    }
+
     pub(crate) fn new(responses: Vec<(u16, Value)>) -> Self {
         Self::with_account(responses, Some("281"))
     }
@@ -132,4 +137,11 @@ pub(crate) fn app_tokens(profile: &str) -> crate::auth::TokenSet {
         expires_in: None,
         token_type: None,
     }
+}
+
+pub(crate) fn auth_identity() -> Value {
+    serde_json::json!({"token": {
+        "account": {"uuid": "test-account-uuid", "routing_id": 281},
+        "user": {"auth_id": "app-user-1", "id": 2260}
+    }})
 }

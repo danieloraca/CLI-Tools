@@ -6,19 +6,37 @@ Blocking login, profile-loading, and contacts page changes show loading spinners
 
 ## Setup
 
-Copy the environment template:
+From the repository directory, copy the environment template:
 
 ```sh
 cp .env.example .env
 ```
 
-Replace the placeholder URLs in `.env` with the account and app API base URLs for the same Gecko environment. Include any required API version path. The CLI loads `.env` automatically, and Git ignores it. See [.env.example](.env.example) for what each variable configures.
+Replace the placeholder URLs in `.env` with the account and app API base URLs for the same Gecko environment. Include any required API version path. The CLI loads `.env` automatically; `.env.example` is only a template and is not loaded. Git ignores your local `.env`.
 
-Run:
+| Environment variable | Command-line option | Used for |
+| --- | --- | --- |
+| `CLI_TOOLS_ACCOUNT_API_URL` | `--base-url` | Login, profile selection and app token claims |
+| `CLI_TOOLS_APP_API_URL` | `--app-api-base-url` | The post-login menu, contact browsing and scenario application |
+
+With `.env` configured, log in without passing the URLs:
 
 ```sh
 cargo run -- login --email you@example.com
 ```
+
+You can also pass the URLs explicitly. Replace these example URLs with your environment's values:
+
+```sh
+cargo run -- login \
+  --base-url https://account-api.example.test \
+  --app-api-base-url https://app-api.example.test \
+  --email you@example.com
+```
+
+`--email` is optional: the CLI prompts for it when omitted. It also prompts for your password and any required MFA response.
+
+If login reports that `--base-url <BASE_URL>` is required, `CLI_TOOLS_ACCOUNT_API_URL` was not found. Check that you copied [.env.example](.env.example) to `.env`, configured its values, and are running from the repository directory, or supply `--base-url` explicitly.
 
 Saved tokens and sessions are replaced atomically. On Unix, new files are private (`0600`) and newly created configuration directories use `0700`; replacing an older token file also corrects its permissions. Output paths must be regular files rather than symlinks.
 
@@ -46,7 +64,15 @@ Contact dates display in UTC, including epoch and offset-bearing timestamps; API
 
 Sensitive fields are masked in the list, plain output and contact headings, including fields omitted from the configured list. Stable properties are also masked if their privacy metadata is unavailable.
 
-Contact reads check that the app token's profile matches the saved session and that Gecko confirms the selected account. Reselect the profile if a stale or mismatched token is rejected.
+Contact reads match the app token against the selected profile's `ExternalId` and `AccountId`. The account service's `ProfileId` identifies the selection; it is a different ID from the token's `profile` claim. The app API's `/auth/check` confirms the account and app user and resolves the numeric IDs used in Gecko's request and response headers.
+
+If an older saved session reports a profile or app-user mismatch, reselect your profile to refresh its saved IDs and app tokens:
+
+```sh
+cargo run -- profiles
+```
+
+Use `cargo run -- login` if the saved login token has expired.
 
 Profile selection, menu, and contacts screens show their controls in the bottom-right legend panel.
 
@@ -102,7 +128,7 @@ cargo run -- profiles --profile-id YOUR_DEV_PROFILE_ID --no-menu
 cargo run -- scenario apply admissions.json --profile-id YOUR_DEV_PROFILE_ID
 ```
 
-Apply uses `CLI_TOOLS_APP_API_URL` (or `--app-api-base-url`), the saved app token and selected session. Override their paths with `--app-token-file` and `--session-file`. The explicit profile ID and token profile must match the saved session. Before writes, Gecko must confirm the selected account in its `Gecko-Account` response header; a missing or mismatched header stops the run. Local JWT decoding checks consistency only; Gecko verifies the token. Applying performs writes immediately after preflight; generation is the offline preview step.
+Apply uses `CLI_TOOLS_APP_API_URL` (or `--app-api-base-url`), the saved app token and selected session. Override their paths with `--app-token-file` and `--session-file`. The explicit profile ID must match the saved selection, while the token must match its app user and account. Before writes, `/auth/check` verifies those identities and resolves the numeric routing ID checked against each `Gecko-Account` response header; a missing or mismatched header stops the run. Local JWT decoding checks consistency only; Gecko verifies the token. Applying performs writes immediately after preflight; generation is the offline preview step.
 
 The command resolves the profile's actual name and email field IDs, creates the custom fields with matching disabled, creates the requested group, and creates contacts. It requires one unambiguous name field and one email field. Existing required fields other than name/email, or a required email field with missing-email fixtures, cause a preflight error before writes.
 

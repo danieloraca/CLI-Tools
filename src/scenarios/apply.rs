@@ -341,7 +341,8 @@ fn truthy(value: &Value) -> bool {
 struct GeckoApi {
     base_url: String,
     http: Client,
-    account_id: String,
+    session: session::AppSession,
+    identity: std::cell::OnceCell<crate::app_identity::ApiIdentity>,
 }
 
 impl GeckoApi {
@@ -362,14 +363,6 @@ impl GeckoApi {
         );
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Accept", "application/json".parse()?);
-        headers.insert(
-            "Gecko-Account",
-            selected.account_id.parse().context("invalid account id")?,
-        );
-        headers.insert(
-            "Gecko-User",
-            selected.user_id.parse().context("invalid user id")?,
-        );
         let mut bearer: reqwest::header::HeaderValue = format!("Bearer {}", tokens.access_token)
             .parse()
             .context("invalid app token")?;
@@ -384,7 +377,8 @@ impl GeckoApi {
         Ok(Self {
             base_url,
             http,
-            account_id: selected.account_id.clone(),
+            session: selected.clone(),
+            identity: std::cell::OnceCell::new(),
         })
     }
 
@@ -395,9 +389,19 @@ impl GeckoApi {
         query: &[(&str, String)],
         body: Option<&Value>,
     ) -> Result<Value> {
+        if self.identity.get().is_none() {
+            let identity = crate::app_identity::confirm_session(
+                self.http.get(format!("{}/auth/check", self.base_url)),
+                &self.session,
+            )?;
+            let _ = self.identity.set(identity);
+        }
+        let identity = self.identity.get().context("missing app API identity")?;
         let mut request = self
             .http
             .request(method, format!("{}/{endpoint}", self.base_url))
+            .header("Gecko-Account", &identity.account_id)
+            .header("Gecko-User", &identity.user_id)
             .query(query);
         if let Some(body) = body {
             request = request.json(body);
@@ -405,7 +409,7 @@ impl GeckoApi {
         let response = request.send().context("Gecko API request failed")?;
         let status = response.status();
         if status.is_success() {
-            crate::app_identity::validate_account(response.headers(), &self.account_id)?;
+            crate::app_identity::validate_account(response.headers(), &identity.account_id)?;
         }
         let payload: Value = response
             .json()

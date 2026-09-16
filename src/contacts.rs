@@ -22,6 +22,8 @@ impl ContactService {
         let base_url = normalize_base_url(base_url.into())?;
         let http = Client::builder()
             .user_agent("cli_tools/0.1.0")
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("failed to build HTTP client")?;
 
@@ -36,13 +38,19 @@ impl ContactService {
         per_page: u32,
     ) -> Result<ContactsPage> {
         crate::app_identity::validate_token_profile(tokens, session)?;
-        let columns = self.list_columns(tokens, session)?;
+        let identity = crate::app_identity::confirm_session(
+            self.http
+                .get(format!("{}/auth/check", self.base_url))
+                .bearer_auth(&tokens.access_token),
+            session,
+        )?;
+        let columns = self.list_columns(tokens, &identity)?;
         let response = self
             .http
             .get(format!("{}/contacts", self.base_url))
             .header("Accept", "application/json")
-            .header(format!("{HEADER_PREFIX}-Account"), &session.account_id)
-            .header(format!("{HEADER_PREFIX}-User"), &session.user_id)
+            .header(format!("{HEADER_PREFIX}-Account"), &identity.account_id)
+            .header(format!("{HEADER_PREFIX}-User"), &identity.user_id)
             .bearer_auth(&tokens.access_token)
             .query(&[
                 ("contact_rfields", CONTACT_RFIELDS.to_string()),
@@ -57,7 +65,7 @@ impl ContactService {
         let status = response.status();
         let headers = response.headers().clone();
         if status.is_success() {
-            crate::app_identity::validate_account(&headers, &session.account_id)?;
+            crate::app_identity::validate_account(&headers, &identity.account_id)?;
         }
         let payload: Value = response.json().with_context(|| {
             format!("contacts API returned non-JSON response with status {status}")
@@ -73,7 +81,11 @@ impl ContactService {
         parse_contacts_page_with_pagination(payload, pagination, &columns)
     }
 
-    fn list_columns(&self, tokens: &TokenSet, session: &AppSession) -> Result<ContactColumns> {
+    fn list_columns(
+        &self,
+        tokens: &TokenSet,
+        identity: &crate::app_identity::ApiIdentity,
+    ) -> Result<ContactColumns> {
         let mut fields = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         // Read all contact metadata: privacy flags still apply when a field is omitted from
@@ -83,8 +95,8 @@ impl ContactService {
                 .http
                 .get(format!("{}/fields", self.base_url))
                 .header("Accept", "application/json")
-                .header(format!("{HEADER_PREFIX}-Account"), &session.account_id)
-                .header(format!("{HEADER_PREFIX}-User"), &session.user_id)
+                .header(format!("{HEADER_PREFIX}-Account"), &identity.account_id)
+                .header(format!("{HEADER_PREFIX}-User"), &identity.user_id)
                 .bearer_auth(&tokens.access_token)
                 .query(&[
                     ("field_type", "contact".to_string()),
@@ -95,7 +107,7 @@ impl ContactService {
                 .context("contact field metadata request failed")?;
             let status = response.status();
             if status.is_success() {
-                crate::app_identity::validate_account(response.headers(), &session.account_id)?;
+                crate::app_identity::validate_account(response.headers(), &identity.account_id)?;
             }
             let payload: Value = response.json().with_context(|| {
                 format!("contact field metadata returned non-JSON with status {status}")
@@ -132,12 +144,18 @@ impl ContactService {
         contact_id: &str,
     ) -> Result<ContactDetail> {
         crate::app_identity::validate_token_profile(tokens, session)?;
+        let identity = crate::app_identity::confirm_session(
+            self.http
+                .get(format!("{}/auth/check", self.base_url))
+                .bearer_auth(&tokens.access_token),
+            session,
+        )?;
         let response = self
             .http
             .get(format!("{}/contacts/{}", self.base_url, contact_id))
             .header("Accept", "application/json")
-            .header(format!("{HEADER_PREFIX}-Account"), &session.account_id)
-            .header(format!("{HEADER_PREFIX}-User"), &session.user_id)
+            .header(format!("{HEADER_PREFIX}-Account"), &identity.account_id)
+            .header(format!("{HEADER_PREFIX}-User"), &identity.user_id)
             .bearer_auth(&tokens.access_token)
             .query(&[
                 ("contact_rfields", "id".to_string()),
@@ -151,7 +169,7 @@ impl ContactService {
 
         let status = response.status();
         if status.is_success() {
-            crate::app_identity::validate_account(response.headers(), &session.account_id)?;
+            crate::app_identity::validate_account(response.headers(), &identity.account_id)?;
         }
         let payload: Value = response.json().with_context(|| {
             format!("contact detail API returned non-JSON response with status {status}")
@@ -1020,8 +1038,8 @@ mod tests {
     fn test_session() -> AppSession {
         AppSession {
             profile_id: "p-1".into(),
-            account_id: "281".into(),
-            user_id: "2260".into(),
+            account_id: "test-account-uuid".into(),
+            user_id: "app-user-1".into(),
             account_name: "Development".into(),
             app_description: "Forms".into(),
             redirect_url: String::new(),
@@ -1030,7 +1048,7 @@ mod tests {
 
     #[test]
     fn loads_stable_contact_columns_and_resolves_configured_phone_and_chat_fields() {
-        let server = crate::test_support::Server::new(vec![
+        let server = crate::test_support::Server::with_identity(vec![
             (
                 200,
                 json!({"fields": [
@@ -1049,7 +1067,7 @@ mod tests {
         let service = ContactService::new(&server.url).unwrap();
         let page = service
             .list_contacts(
-                &crate::test_support::app_tokens("p-1"),
+                &crate::test_support::app_tokens("app-user-1"),
                 &test_session(),
                 1,
                 15,
@@ -1060,7 +1078,9 @@ mod tests {
         assert_eq!(page.contacts[0].phone, "+4412345");
         assert_eq!(page.contacts[0].created_at, "30th Apr 2026 at 10:58");
         assert_eq!(page.contacts[0].last_chat_message, "1st May 2026 at 10:00");
-        let requests = server.finish();
+        let all_requests = server.finish();
+        assert!(all_requests[0].line.starts_with("GET /auth/check?"));
+        let requests = &all_requests[1..];
         assert!(requests[0].line.starts_with("GET /fields?"));
         assert!(requests[1].line.contains("page=2"));
         let request_url = reqwest::Url::parse(&format!(
@@ -1102,17 +1122,17 @@ mod tests {
                 15,
             )
             .unwrap_err();
-        assert!(error.to_string().contains("does not match saved profile"));
+        assert!(error.to_string().contains("does not match saved app user"));
         for account in [None, Some("999")] {
             let server = crate::test_support::Server::with_account(
-                vec![(200, json!({"contact": {"id": 7, "current_values": []}}))],
+                vec![(200, crate::test_support::auth_identity())],
                 account,
             );
             let service = ContactService::new(&server.url).unwrap();
             assert!(
                 service
                     .contact_detail(
-                        &crate::test_support::app_tokens("p-1"),
+                        &crate::test_support::app_tokens("app-user-1"),
                         &test_session(),
                         "7"
                     )
@@ -1123,8 +1143,32 @@ mod tests {
     }
 
     #[test]
+    fn opens_contact_detail_with_the_resolved_account_and_user_headers() {
+        let server = crate::test_support::Server::with_identity(vec![(
+            200,
+            json!({"contact": {"id": 7, "current_values": []}}),
+        )]);
+        let detail = ContactService::new(&server.url)
+            .unwrap()
+            .contact_detail(
+                &crate::test_support::app_tokens("app-user-1"),
+                &test_session(),
+                "7",
+            )
+            .unwrap();
+        assert_eq!(detail.id, "7");
+        let requests = server.finish();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].line.starts_with("GET /auth/check?"));
+        assert!(requests[1].line.starts_with("GET /contacts/7?"));
+        let headers = requests[1].headers.to_lowercase();
+        assert!(headers.contains("gecko-account: 281"));
+        assert!(headers.contains("gecko-user: 2260"));
+    }
+
+    #[test]
     fn masks_sensitive_fields_even_when_omitted_from_the_configured_list() {
-        let server = crate::test_support::Server::new(vec![
+        let server = crate::test_support::Server::with_identity(vec![
             (
                 200,
                 json!({"data": [
@@ -1149,7 +1193,7 @@ mod tests {
         let page = ContactService::new(&server.url)
             .unwrap()
             .list_contacts(
-                &crate::test_support::app_tokens("p-1"),
+                &crate::test_support::app_tokens("app-user-1"),
                 &test_session(),
                 1,
                 15,
@@ -1171,7 +1215,9 @@ mod tests {
                 && !table.contains("private@example.test")
                 && !table.contains("+4412345")
         );
-        let requests = server.finish();
+        let all_requests = server.finish();
+        assert!(all_requests[0].line.starts_with("GET /auth/check?"));
+        let requests = &all_requests[1..];
         assert_eq!(requests.len(), 4);
         assert!(requests[1].line.contains("page=2"));
     }

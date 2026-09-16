@@ -234,6 +234,7 @@ fn main() -> Result<()> {
                     },
                 )?;
                 let app_tokens = auth::claim_app_tokens(&base_url, &session.redirect_url)?;
+                app_identity::validate_token_profile(&app_tokens, &session)?;
 
                 if !no_store {
                     let app_token_file = app_token_file
@@ -293,6 +294,7 @@ fn main() -> Result<()> {
                 },
             )?;
             let app_tokens = auth::claim_app_tokens(&base_url, &session.redirect_url)?;
+            app_identity::validate_token_profile(&app_tokens, &session)?;
 
             let session_file = session_file
                 .or_else(session::default_session_file)

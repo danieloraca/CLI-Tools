@@ -95,8 +95,6 @@ pub struct SaturateResponse {
     pub apps: Vec<App>,
     #[serde(default)]
     pub profiles: Vec<Profile>,
-    #[serde(default)]
-    pub user: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,8 +105,6 @@ pub struct Account {
     pub name: String,
     #[serde(rename = "IsClosed", default)]
     pub is_closed: bool,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +119,8 @@ pub struct App {
 pub struct Profile {
     #[serde(rename = "ProfileId")]
     pub profile_id: Value,
+    #[serde(rename = "ExternalId")]
+    pub external_id: Value,
     #[serde(rename = "AccountId")]
     pub account_id: Value,
     #[serde(rename = "AppId")]
@@ -140,6 +138,7 @@ pub struct RedirectResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileChoice {
     pub profile_id: Value,
+    pub external_id: String,
     pub account_id: Value,
     pub account_header: String,
     pub account_name: String,
@@ -171,7 +170,7 @@ pub fn select_profile_after_login(
         account_id: selected.account_header.clone(),
         account_name: selected.account_name.clone(),
         app_description: selected.app_description.clone(),
-        user_id: user_id(&data)?,
+        user_id: selected.external_id.clone(),
         redirect_url: redirect.redirect_url,
     })
 }
@@ -238,8 +237,10 @@ pub fn build_profile_choices(data: &SaturateResponse) -> Result<Vec<ProfileChoic
             .with_context(|| format!("missing app {}", display_id(&profile.app_id)))?;
         let choice = ProfileChoice {
             profile_id: profile.profile_id.clone(),
+            external_id: display_header_value(&profile.external_id)
+                .context("profile data did not include a valid ExternalId")?,
             account_id: profile.account_id.clone(),
-            account_header: account_header(account),
+            account_header: display_id(&account.account_id),
             account_name: account.name.clone(),
             app_description: app.description.clone(),
             is_closed: account.is_closed,
@@ -334,27 +335,6 @@ fn display_id(value: &Value) -> String {
     }
 }
 
-fn account_header(account: &Account) -> String {
-    ["routing_id", "RoutingId", "routingId"]
-        .iter()
-        .filter_map(|key| account.extra.get(*key))
-        .find_map(display_header_value)
-        .unwrap_or_else(|| display_id(&account.account_id))
-}
-
-fn user_id(data: &SaturateResponse) -> Result<String> {
-    let user = data
-        .user
-        .as_object()
-        .context("profile data did not include a user object")?;
-
-    ["id", "Id", "UserId", "user_id"]
-        .iter()
-        .filter_map(|key| user.get(*key))
-        .find_map(display_header_value)
-        .context("profile data did not include a user id")
-}
-
 fn display_header_value(value: &Value) -> Option<String> {
     match value {
         Value::String(value) if !value.trim().is_empty() => Some(value.clone()),
@@ -378,9 +358,9 @@ mod tests {
                 { "Id": "chat", "Description": "Chat & Chatbot", "Icon": "/chat.svg" }
             ],
             "profiles": [
-                { "ProfileId": "p-unavailable", "AccountId": 1, "AppId": "chat", "unavailable": true },
-                { "ProfileId": "p-open", "AccountId": 1, "AppId": "forms" },
-                { "ProfileId": "p-closed", "AccountId": 2, "AppId": "chat" }
+                { "ProfileId": "p-unavailable", "ExternalId": "app-chat-user", "AccountId": 1, "AppId": "chat", "unavailable": true },
+                { "ProfileId": "p-open", "ExternalId": "app-form-user", "AccountId": 1, "AppId": "forms" },
+                { "ProfileId": "p-closed", "ExternalId": "app-closed-user", "AccountId": 2, "AppId": "chat" }
             ],
             "user": { "id": 2260 }
         }))
@@ -393,7 +373,8 @@ mod tests {
 
         assert_eq!(choices.len(), 2);
         assert_eq!(choices[0].account_name, "Open Account");
-        assert_eq!(choices[0].account_header, "281");
+        assert_eq!(choices[0].account_header, "1");
+        assert_eq!(choices[0].external_id, "app-form-user");
         assert_eq!(
             choices[0].app_description,
             "Forms, Events, Call Centre, Email & Text Campaigns"
@@ -446,9 +427,40 @@ mod tests {
     }
 
     #[test]
-    fn extracts_user_id_from_profile_data() {
-        let user_id = user_id(&sample_saturate_response()).unwrap();
-
-        assert_eq!(user_id, "2260");
+    fn saves_the_selected_external_id_instead_of_the_login_user_id() {
+        let data = sample_saturate_response();
+        let server = crate::test_support::Server::new(vec![
+            (
+                200,
+                json!({
+                    "accounts": [{"AccountId": "account-uuid", "Name": "Development"}],
+                    "apps": [{"Id": "forms", "Description": "Forms"}],
+                    "profiles": [{"ProfileId": "auth-profile-uuid", "ExternalId": "app-user-id", "AccountId": "account-uuid", "AppId": "forms"}],
+                    "user": {"UserId": "login-user-uuid"}
+                }),
+            ),
+            (
+                200,
+                json!({"RedirectUrl": "https://example.test/?code=test"}),
+            ),
+        ]);
+        let session = select_profile_after_login(
+            &server.url,
+            &crate::test_support::app_tokens("unused"),
+            ProfileSelectionOptions {
+                profile_id: Some("auth-profile-uuid".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(session.profile_id, "auth-profile-uuid");
+        assert_eq!(session.account_id, "account-uuid");
+        assert_eq!(session.user_id, "app-user-id");
+        let requests = server.finish();
+        assert_eq!(requests[1].body["ProfileId"], "auth-profile-uuid");
+        assert_eq!(
+            build_profile_choices(&data).unwrap()[0].external_id,
+            "app-form-user"
+        );
     }
 }

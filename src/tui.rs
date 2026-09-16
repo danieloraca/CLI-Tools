@@ -1415,6 +1415,7 @@ mod tests {
         vec![
             ProfileChoice {
                 profile_id: serde_json::json!("p-1"),
+                external_id: "app-user-1".into(),
                 account_id: serde_json::json!(281),
                 account_header: "281".to_string(),
                 account_name: "Stage 281".to_string(),
@@ -1423,6 +1424,7 @@ mod tests {
             },
             ProfileChoice {
                 profile_id: serde_json::json!("p-2"),
+                external_id: "app-user-2".into(),
                 account_id: serde_json::json!(281),
                 account_header: "281".to_string(),
                 account_name: "Stage 281".to_string(),
