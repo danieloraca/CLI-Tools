@@ -1,8 +1,17 @@
 use crate::{auth, session};
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Method, Url, blocking::Client, redirect::Policy};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeSet, time::Duration};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Target {
+    pub base_url: String,
+    pub account_id: String,
+    pub profile_id: String,
+}
 
 pub struct GeckoApi {
     pub base_url: String,
@@ -12,6 +21,14 @@ pub struct GeckoApi {
 }
 
 impl GeckoApi {
+    pub fn target(&self) -> Target {
+        Target {
+            base_url: self.base_url.clone(),
+            account_id: self.session.account_id.clone(),
+            profile_id: self.session.profile_id.clone(),
+        }
+    }
+
     pub fn new(
         base_url: &str,
         tokens: &auth::TokenSet,

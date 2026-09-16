@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod app_identity;
 mod auth;
+mod batch;
 mod catalog;
 mod contacts;
 mod export;
@@ -31,6 +32,21 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Preview and execute targeted label/consent changes.
+    Batch {
+        #[command(subcommand)]
+        command: batch::BatchCommand,
+    },
+    /// Discover labels available to this account.
+    Labels {
+        #[command(subcommand)]
+        command: catalog::CatalogCommand,
+    },
+    /// Discover available consent reasons.
+    Consents {
+        #[command(subcommand)]
+        command: catalog::CatalogCommand,
+    },
     /// Discover contact fields and their IDs/types/choices.
     Fields {
         #[command(subcommand)]
@@ -204,6 +220,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Batch { command } => batch::run(command)?,
+        Commands::Labels { command } => catalog::run_simple(command, "labels")?,
+        Commands::Consents { command } => catalog::run_simple(command, "consents")?,
         Commands::Fields { command } => catalog::run_fields(command)?,
         Commands::Filters { command } => catalog::run_filters(command)?,
         Commands::Scenario { command } => scenarios::run(command)?,
@@ -411,4 +430,14 @@ fn required_app_api_base_url(value: Option<String>) -> Result<String> {
     value.context(
         "app API base URL was not provided; set CLI_TOOLS_APP_API_URL or pass --app-api-base-url",
     )
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+    #[test]
+    fn command_argument_definitions_are_consistent() {
+        Cli::command().debug_assert();
+    }
 }

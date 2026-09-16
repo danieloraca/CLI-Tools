@@ -68,3 +68,14 @@ pub fn run_fields(command: CatalogCommand) -> Result<()> {
     );
     Ok(())
 }
+
+pub fn run_simple(command: CatalogCommand, endpoint: &str) -> Result<()> {
+    let CatalogCommand::List(connection) = command;
+    let entries = connection.open()?.collection(endpoint, &[])?;
+    let rows: Vec<_> = entries.iter().map(|f| serde_json::json!({"id":f["id"],"name":f["name"],"title":f["title"],"description":f["description"]})).collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({endpoint:rows}))?
+    );
+    Ok(())
+}

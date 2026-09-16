@@ -85,3 +85,5 @@ pub fn run(command: ScenarioCommand) -> Result<()> {
         }
     }
 }
+
+pub(crate) use apply::{lock_state, recorded_contacts};

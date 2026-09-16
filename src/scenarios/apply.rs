@@ -1,5 +1,5 @@
 use super::fixture::{FieldType, Scenario};
-use crate::gecko::{GeckoApi, resource_id};
+use crate::gecko::{GeckoApi, Target, resource_id};
 use crate::{auth, session};
 use anyhow::{Context, Result, ensure};
 use clap::Args;
@@ -29,14 +29,6 @@ pub struct ApplyArgs {
     /// Progress journal. Defaults to FIXTURE.apply-state.json; keep it for reruns.
     #[arg(long)]
     pub state_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct Target {
-    base_url: String,
-    account_id: String,
-    profile_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -326,7 +318,7 @@ fn truthy(value: &Value) -> bool {
     value == true || value == 1 || value == "1"
 }
 
-fn lock_state(path: &Path) -> Result<File> {
+pub(crate) fn lock_state(path: &Path) -> Result<File> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -365,3 +357,44 @@ fn save_state(path: &Path, state: &State) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn recorded_contacts(path: &Path, target: &Target) -> Result<Vec<String>> {
+    let state: State =
+        serde_json::from_slice(&fs::read(path)?).context("invalid scenario journal")?;
+    ensure!(
+        state.version == 1 && &state.target == target,
+        "scenario journal belongs to another target"
+    );
+    ensure!(
+        state.pending.is_none(),
+        "scenario journal has an uncertain operation; reconcile it first"
+    );
+    let mut ids = BTreeSet::new();
+    for (key, id) in &state.completed {
+        if let Some(key) = key.strip_prefix("contact:") {
+            ensure!(
+                state.completed.get(&format!("populated:{key}")) == Some(id),
+                "scenario contact {key} is not fully populated"
+            );
+            ensure!(
+                id.parse::<u64>().is_ok_and(|id| id > 0),
+                "invalid recorded contact ID"
+            );
+            ensure!(
+                ids.insert(id.clone()),
+                "scenario journal repeats a created contact ID"
+            );
+        }
+        if let Some(key) = key.strip_prefix("populated:") {
+            ensure!(
+                state.completed.get(&format!("contact:{key}")) == Some(id),
+                "scenario journal has an orphan population checkpoint"
+            );
+        }
+    }
+    ensure!(
+        !ids.is_empty(),
+        "scenario journal contains no completed contacts"
+    );
+    Ok(ids.into_iter().collect())
+}

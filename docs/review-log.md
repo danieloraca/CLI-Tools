@@ -80,3 +80,24 @@ Original reviewer report:
 > EXPORT-01 resolved: aliases read actual values, preserve masking, return null for absent types and reject ambiguity. Regression covers populated fields omitted from the UI list. No remaining findings in this focused follow-up.
 
 Owner disposition: accepted. Step 2 complete with 80 tests, formatting and strict Clippy passing.
+
+## Step 3 — source review, pass 1
+
+Target: baseline `e5fa2fa`, manifest SHA-256 `278ff5b9fff0921b9c4e57a5b0d416f72925fd2f95d64de6b3a6037c56ec0f74`.
+
+Original reviewer report:
+
+> P2 BATCH-01: label-remove sends remove_contact_label, absent from Ability's contact action permission map. Every needed removal fails Forbidden, even for admins, and leaves the journal pending. Omit it unless a supported API safely preserves unrelated labels.
+> No further findings in targeting, consents, preflight, locking, readback or recovery. Local backend inspection only; no live operations.
+
+Owner disposition: accepted. Removed the unsupported extra command and operation flag. The selected UI workflow (Add labels) remains implemented; consent grant/revoke use the supported manage_consent action. README/plan record the API limitation. Initial 89 tests and strict Clippy passed.
+
+## Step 3 — source review, pass 2
+
+Target manifest SHA-256 `ff75fdccee6d6c4555756f0a2c5f2f3fe41038cb9c0405ad851e64fabafdfa48`.
+
+Original reviewer report:
+
+> BATCH-01 resolved: unsupported command/removal path are gone. Label addition and consent grant/revoke retain supported payloads and recovery. No remaining findings in this focused follow-up.
+
+Owner disposition: accepted. Step 3 complete with 89 tests, formatting and strict Clippy passing.

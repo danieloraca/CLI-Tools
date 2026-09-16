@@ -5,3 +5,6 @@ Cargo.lock
 *.apply-state.json
 *.apply-state.json.lock
 *.apply-state.json.tmp
+
+*.batch-state.json
+*.batch-state.json.lock

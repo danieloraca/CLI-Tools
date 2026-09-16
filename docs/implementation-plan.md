@@ -23,8 +23,8 @@ Each implementation step gets focused tests, formatting, strict Clippy, an indep
 | 0 | Save and review this plan | Complete |
 | 1 | Server-side search, field/label/date filters, saved filter selection, sorting, JSON output | Complete |
 | 2 | Field catalog, configurable export columns, CSV and explicit all-page export | Complete |
-| 3 | Targeted bulk label and consent changes with preview and resumable progress | In progress |
-| 4 | Add selected contacts to existing organisations/events | Pending |
+| 3 | Targeted bulk label and consent changes with preview and resumable progress | Complete |
+| 4 | Add selected contacts to existing organisations/events | In progress |
 | 5 | Verify a recorded scenario against its expected values/resources | Pending |
 | 6 | Preview and clean up resources recorded as created by a scenario run | Pending |
 
@@ -47,6 +47,8 @@ Verify custom field mappings, null/typed values, privacy, CSV escaping, capped p
 Add discovery of label and consent IDs, and commands that act on explicit contact IDs or the contacts recorded in an existing scenario journal. Default to a preview; an explicit execution flag submits writes. Do not support implicit whole-account updates. Check target account/profile and reject missing or foreign resources before writes. Preserve unrelated labels and consent entries according to Gecko's actual additive/update contracts.
 
 Use a private journal bound to API target, selected profile, operation and input IDs. Hold an exclusive lock for the full preview/execution/journal lifecycle; reject another process using the same journal. Record each write before sending, checkpoint confirmed success, and refuse to retry an uncertain result automatically. Report completed/pending counts without leaking contact data. A completed rerun makes no writes.
+
+Contract clarification: ordinary contact updates replace label/consent collections. Use one-contact `/contacts/mass_action` requests with an explicit `conditions.contact_ids` array and only a label-add or consent add/remove action. Label removal is outside this increment: Gecko's permission mapping rejects that mass action and full-list replacement cannot preserve concurrent changes. The maintained backend processes this size synchronously under its default threshold; a returned queue ID remains uncertain until reconciled. Read back the desired state before checkpointing.
 
 Verify exact payloads and target IDs, preservation of unrelated state, zero writes for previews/invalid targets, and interruption/resume behaviour. Mutation verification uses local mock APIs; shared staging records are not changed as part of development checks.
 
@@ -86,3 +88,5 @@ Verify preview has zero writes, only recorded IDs are deleted in dependency orde
 Step 0: local commit `4d70704`. Step 1: 74 tests, formatting and strict Clippy pass; all reviewer findings resolved. Staging smoke check stopped at expired-token HTTP 401 before querying contacts. Boolean and zero/empty equality are explicitly rejected to avoid Gecko's unsupported comparison semantics.
 
 Step 1 commit: `369513d`. Step 2: 80 tests, formatting and strict Clippy pass; EXPORT-01 resolved. Exports buffer at most the explicit row limit (100,000 by default), so an oversized export fails instead of silently truncating.
+
+Step 2 commit: `e5fa2fa`. Step 3: 89 tests, formatting and strict Clippy pass; BATCH-01 resolved by omitting an unsupported extra label-removal command. Label addition and consent grant/revoke are complete.

@@ -106,6 +106,35 @@ Exports use the requested page unless `--all` is set. `--all` starts at page 1, 
 
 CSV quotes every cell, including embedded quotes, commas and newlines. Arrays/objects use JSON text inside a cell and null is an empty cell. Export flags select noninteractive output, defaulting to JSON unless `--csv` or `--plain` is supplied. No output is written until the full export succeeds. `--output` publishes a new private file atomically and never overwrites an existing file. Without it, completed output goes to stdout.
 
+## Targeted batch changes
+
+Discover the available resource IDs, then preview an exact selection:
+
+```sh
+cargo run -- labels list
+cargo run -- consents list
+cargo run -- batch label-add --label-id 9 --contact-id 101 --contact-id 102 \
+  --profile-id YOUR_DEV_PROFILE_ID --journal labels.batch-state.json
+```
+
+The JSON preview names the target account/profile, operation and all selected IDs, with a per-contact `change_required` flag. Add `--execute` to the same command to perform it. The journal binds the exact operation and selection; change either by choosing a new journal.
+
+Supported operations are `label-add`, `consent-grant` and `consent-revoke`. Consent commands take `--consent-id`; label addition takes `--label-id`. Label removal is not exposed: Gecko's mass-action permission map rejects that operation, and replacing the entire label list could overwrite another editor's changes. IDs must refer to existing resources in the selected account. Every remaining contact is checked before the first write. An already-satisfied operation is verified and skipped.
+
+Use generated contacts as the selection instead of listing their IDs:
+
+```sh
+cargo run -- batch consent-grant --consent-id 7 \
+  --scenario-state admissions.apply-state.json --profile-id YOUR_DEV_PROFILE_ID \
+  --journal consents.batch-state.json
+```
+
+This selects the journal's recorded, fully populated contacts. Pending/partially populated contacts or a different target are rejected. It does not infer targets from email addresses, labels or queries. The scenario journal stays locked through the batch to prevent concurrent creation/cleanup.
+
+Each write uses a single-contact Gecko add/remove action, so unrelated labels and consents are preserved. The result is read back before recording success. These are real Gecko actions: ordinary write hooks and workflows may run. A queued, failed or unconfirmed action remains `pending` and is never retried automatically. No shared staging records are changed by the CLI's test suite.
+
+Keep the private batch journal. A completed rerun makes no API requests. On interruption, completed contacts stay recorded. For a pending contact, inspect Gecko after any queued action finishes: if the desired state is confirmed, add its ID to `completed` with `{"verified": true}` and clear `pending`; if the action definitely did not run, only clear `pending`. If uncertain, leave it pending. Rerun with the original operation and IDs. Stop other processes and back up the journal before manual reconciliation. `*.batch-state.json` and its lock are ignored by Git; keep custom journal names out of version control yourself.
+
 ## Test-scenario builder
 
 Generate a scenario offline, without credentials or API requests:
