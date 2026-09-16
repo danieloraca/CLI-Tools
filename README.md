@@ -6,12 +6,13 @@ Blocking login, profile-loading, and contacts page changes show loading spinners
 
 ## Setup
 
-Create a local `.env` file:
+Copy the environment template:
 
 ```sh
-CLI_TOOLS_ACCOUNT_API_URL='...'
-CLI_TOOLS_APP_API_URL='...'
+cp .env.example .env
 ```
+
+Replace the placeholder URLs in `.env` with the account and app API base URLs for the same Gecko environment. Include any required API version path. The CLI loads `.env` automatically, and Git ignores it. See [.env.example](.env.example) for what each variable configures.
 
 Run:
 
