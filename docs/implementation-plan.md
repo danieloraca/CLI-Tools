@@ -21,8 +21,8 @@ Each implementation step gets focused tests, formatting, strict Clippy, an indep
 | Step | Outcome | Status |
 | --- | --- | --- |
 | 0 | Save and review this plan | Complete |
-| 1 | Server-side search, field/label/date filters, saved filter selection, sorting, JSON output | In progress |
-| 2 | Field catalog, configurable export columns, CSV and explicit all-page export | Pending |
+| 1 | Server-side search, field/label/date filters, saved filter selection, sorting, JSON output | Complete |
+| 2 | Field catalog, configurable export columns, CSV and explicit all-page export | In progress |
 | 3 | Targeted bulk label and consent changes with preview and resumable progress | Pending |
 | 4 | Add selected contacts to existing organisations/events | Pending |
 | 5 | Verify a recorded scenario against its expected values/resources | Pending |
@@ -83,4 +83,4 @@ Verify preview has zero writes, only recorded IDs are deleted in dependency orde
 
 ## Completion record
 
-Pending. Add each step's local commit, observed checks, reviewer disposition and any material deviation as it lands.
+Step 0: local commit `4d70704`. Step 1: 74 tests, formatting and strict Clippy pass; all reviewer findings resolved. Staging smoke check stopped at expired-token HTTP 401 before querying contacts. Boolean and zero/empty equality are explicitly rejected to avoid Gecko's unsupported comparison semantics.

@@ -1,33 +1,35 @@
 use crate::api::normalize_base_url;
 use crate::auth::TokenSet;
 use crate::session::AppSession;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
-use reqwest::{blocking::Client, header::HeaderMap};
+use reqwest::header::HeaderMap;
+use serde::Serialize;
 use serde_json::Value;
 
 const CONTACT_RFIELDS: &str =
     "id,full_name,email,created_at,field_1,field_2,field_3,field_4,field_5,field_6";
 const LABEL_RFIELDS: &str = "color,name";
-const HEADER_PREFIX: &str = concat!("Ge", "cko");
 
 #[derive(Debug, Clone)]
 pub struct ContactService {
     base_url: String,
-    http: Client,
+    query: crate::query::ContactQuery,
 }
 
 impl ContactService {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let base_url = normalize_base_url(base_url.into())?;
-        let http = Client::builder()
-            .user_agent("cli_tools/0.1.0")
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("failed to build HTTP client")?;
+        Ok(Self {
+            base_url,
+            query: Default::default(),
+        })
+    }
 
-        Ok(Self { base_url, http })
+    pub fn with_query(mut self, query: crate::query::ContactQuery) -> Result<Self> {
+        query.validate()?;
+        self.query = query;
+        Ok(self)
     }
 
     pub fn list_contacts(
@@ -37,104 +39,42 @@ impl ContactService {
         page: u32,
         per_page: u32,
     ) -> Result<ContactsPage> {
-        crate::app_identity::validate_token_profile(tokens, session)?;
-        let identity = crate::app_identity::confirm_session(
-            self.http
-                .get(format!("{}/auth/check", self.base_url))
-                .bearer_auth(&tokens.access_token),
-            session,
-        )?;
-        let columns = self.list_columns(tokens, &identity)?;
-        let response = self
-            .http
-            .get(format!("{}/contacts", self.base_url))
-            .header("Accept", "application/json")
-            .header(format!("{HEADER_PREFIX}-Account"), &identity.account_id)
-            .header(format!("{HEADER_PREFIX}-User"), &identity.user_id)
-            .bearer_auth(&tokens.access_token)
-            .query(&[
-                ("contact_rfields", CONTACT_RFIELDS.to_string()),
-                ("label_rfields", LABEL_RFIELDS.to_string()),
-                ("per_page", per_page.to_string()),
-                ("page", page.to_string()),
-                ("include", "labels".to_string()),
-            ])
-            .send()
-            .context("contacts API request failed")?;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        if status.is_success() {
-            crate::app_identity::validate_account(&headers, &identity.account_id)?;
-        }
-        let payload: Value = response.json().with_context(|| {
-            format!("contacts API returned non-JSON response with status {status}")
-        })?;
-
-        if !status.is_success() {
-            return Err(
-                api_error(&payload).unwrap_or_else(|| anyhow!("contacts API returned {status}"))
+        self.query.validate()?;
+        anyhow::ensure!(
+            page > 0 && (1..=500).contains(&per_page),
+            "page must be positive and per-page must be 1..500"
+        );
+        let api = crate::gecko::GeckoApi::new(&self.base_url, tokens, session)?;
+        let fields = api.collection("fields", &[("field_type", "contact".into())])?;
+        self.query.validate_fields(&fields)?;
+        let columns = ContactColumns::from_metadata(&fields);
+        if let Some(id) = self.query.saved_filter {
+            let filter = api.request(reqwest::Method::GET, &format!("filters/{id}"), &[], None)?;
+            anyhow::ensure!(
+                crate::gecko::resource_id(filter.get("filter").unwrap_or(&filter))?
+                    == id.to_string(),
+                "saved filter response has an unexpected ID"
             );
         }
+        let mut query = vec![
+            ("contact_rfields", CONTACT_RFIELDS.to_string()),
+            ("label_rfields", LABEL_RFIELDS.to_string()),
+            ("per_page", per_page.to_string()),
+            ("page", page.to_string()),
+            ("include", "labels".to_string()),
+        ];
+        query.extend(self.query.parameters());
+        let conditions = self.query.conditions();
+        let body = serde_json::json!({"conditions": conditions, "requirement": "ALL"});
+        let (method, endpoint, body) = if conditions.is_empty() {
+            (reqwest::Method::GET, "contacts", None)
+        } else {
+            (reqwest::Method::POST, "contacts/search", Some(&body))
+        };
+        let (headers, payload) = api.response(method, endpoint, &query, body)?;
 
         let pagination = ContactsPagination::from_response(&headers, &payload, page, per_page);
         parse_contacts_page_with_pagination(payload, pagination, &columns)
-    }
-
-    fn list_columns(
-        &self,
-        tokens: &TokenSet,
-        identity: &crate::app_identity::ApiIdentity,
-    ) -> Result<ContactColumns> {
-        let mut fields = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        // Read all contact metadata: privacy flags still apply when a field is omitted from
-        // the configured list, and the server may cap per_page below the requested value.
-        for page in 1..=1000 {
-            let response = self
-                .http
-                .get(format!("{}/fields", self.base_url))
-                .header("Accept", "application/json")
-                .header(format!("{HEADER_PREFIX}-Account"), &identity.account_id)
-                .header(format!("{HEADER_PREFIX}-User"), &identity.user_id)
-                .bearer_auth(&tokens.access_token)
-                .query(&[
-                    ("field_type", "contact".to_string()),
-                    ("per_page", "100".to_string()),
-                    ("page", page.to_string()),
-                ])
-                .send()
-                .context("contact field metadata request failed")?;
-            let status = response.status();
-            if status.is_success() {
-                crate::app_identity::validate_account(response.headers(), &identity.account_id)?;
-            }
-            let payload: Value = response.json().with_context(|| {
-                format!("contact field metadata returned non-JSON with status {status}")
-            })?;
-            if !status.is_success() {
-                return Err(api_error(&payload)
-                    .unwrap_or_else(|| anyhow!("contact field metadata returned {status}")));
-            }
-            let items = payload
-                .get("fields")
-                .or_else(|| payload.get("data"))
-                .unwrap_or(&payload)
-                .as_array()
-                .context("contact field metadata did not include a fields array")?;
-            if items.is_empty() {
-                return Ok(ContactColumns::from_metadata(&fields));
-            }
-            for item in items {
-                let id = item
-                    .get("id")
-                    .and_then(display_value)
-                    .context("contact field metadata omitted an ID")?;
-                anyhow::ensure!(seen.insert(id), "contact field pagination repeated an ID");
-                fields.push(item.clone());
-            }
-        }
-        anyhow::bail!("contact field pagination exceeded 1000 pages")
     }
 
     pub fn contact_detail(
@@ -143,54 +83,32 @@ impl ContactService {
         session: &AppSession,
         contact_id: &str,
     ) -> Result<ContactDetail> {
-        crate::app_identity::validate_token_profile(tokens, session)?;
-        let identity = crate::app_identity::confirm_session(
-            self.http
-                .get(format!("{}/auth/check", self.base_url))
-                .bearer_auth(&tokens.access_token),
-            session,
-        )?;
-        let response = self
-            .http
-            .get(format!("{}/contacts/{}", self.base_url, contact_id))
-            .header("Accept", "application/json")
-            .header(format!("{HEADER_PREFIX}-Account"), &identity.account_id)
-            .header(format!("{HEADER_PREFIX}-User"), &identity.user_id)
-            .bearer_auth(&tokens.access_token)
-            .query(&[
+        crate::gecko::resource_id(&serde_json::json!({"id":contact_id}))?;
+        let api = crate::gecko::GeckoApi::new(&self.base_url, tokens, session)?;
+        let payload = api.request(
+            reqwest::Method::GET,
+            &format!("contacts/{contact_id}"),
+            &[
                 ("contact_rfields", "id".to_string()),
                 (
                     "include",
                     "current_values:1000,current_values.field".to_string(),
                 ),
-            ])
-            .send()
-            .context("contact detail API request failed")?;
-
-        let status = response.status();
-        if status.is_success() {
-            crate::app_identity::validate_account(response.headers(), &identity.account_id)?;
-        }
-        let payload: Value = response.json().with_context(|| {
-            format!("contact detail API returned non-JSON response with status {status}")
-        })?;
-
-        if !status.is_success() {
-            return Err(api_error(&payload)
-                .unwrap_or_else(|| anyhow!("contact detail API returned {status}")));
-        }
+            ],
+            None,
+        )?;
 
         parse_contact_detail(payload)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContactsPage {
     pub contacts: Vec<ContactRow>,
     pub pagination: ContactsPagination,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ContactsPagination {
     pub page: u32,
     pub per_page: u32,
@@ -198,7 +116,7 @@ pub struct ContactsPagination {
     pub total_pages: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContactRow {
     pub id: String,
     pub full_name: String,
@@ -209,13 +127,13 @@ pub struct ContactRow {
     pub labels: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContactDetail {
     pub id: String,
     pub fields: Vec<ContactFieldValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContactFieldValue {
     pub label: String,
     pub value: String,
@@ -762,15 +680,6 @@ fn ordinal_day(day: u32) -> String {
     format!("{day}{suffix}")
 }
 
-fn api_error(payload: &Value) -> Option<anyhow::Error> {
-    payload
-        .get("Error")
-        .or_else(|| payload.get("Message"))
-        .or_else(|| payload.get("message"))
-        .and_then(Value::as_str)
-        .map(|message| anyhow!(message.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,6 +953,78 @@ mod tests {
             app_description: "Forms".into(),
             redirect_url: String::new(),
         }
+    }
+
+    #[test]
+    fn queries_are_retained_across_pages_and_json_remains_masked() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Q {
+            #[command(flatten)]
+            query: crate::query::ContactQuery,
+        }
+        let query = Q::parse_from([
+            "test",
+            "--search",
+            "test@example.test",
+            "--where",
+            "17:empty",
+            "--label-id",
+            "9",
+            "--sort",
+            "created-desc",
+        ])
+        .query;
+        let mut responses = Vec::new();
+        for id in [101, 102] {
+            responses.extend([
+                (200, crate::test_support::auth_identity()),
+                (200, json!({"fields":[{"id":17,"type":"email","is_sensitive":true}]})),
+                (200, json!({"fields":[]})),
+                (200, json!({"contacts":[{"id":id,"email":"secret@example.test","full_name":"Secret Name"}]})),
+            ]);
+        }
+        let server = crate::test_support::Server::new(responses);
+        let service = ContactService::new(&server.url)
+            .unwrap()
+            .with_query(query)
+            .unwrap();
+        for page in [1, 2] {
+            let result = service
+                .list_contacts(
+                    &crate::test_support::app_tokens("app-user-1"),
+                    &test_session(),
+                    page,
+                    15,
+                )
+                .unwrap();
+            let encoded = serde_json::to_string(&result).unwrap();
+            assert!(!encoded.contains("secret@example.test"));
+            assert!(!encoded.contains("Secret Name"));
+            assert_eq!(
+                serde_json::from_str::<Value>(&encoded).unwrap()["pagination"]["page"],
+                page
+            );
+        }
+        let requests = server.finish();
+        assert_eq!(requests[3].body, requests[7].body);
+        assert_eq!(requests[3].body["requirement"], "ALL");
+        assert_eq!(
+            requests[3].body["conditions"][1],
+            json!({"model":"label","type":"=","value":[9]})
+        );
+        assert!(requests[3].line.starts_with("POST /contacts/search?"));
+        assert!(
+            requests[3]
+                .line
+                .contains("contact_keyword=test%40example.test")
+        );
+        assert!(requests[7].line.contains("page=2"));
+        assert!(
+            requests[7]
+                .line
+                .contains("order_by=created_at%7CDESC%2Cid%7CASC")
+        );
     }
 
     #[test]

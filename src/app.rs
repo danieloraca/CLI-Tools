@@ -11,11 +11,13 @@ pub struct AppMenuOptions {
     pub app_api_base_url: String,
     pub contacts_page: u32,
     pub contacts_per_page: u32,
+    pub contacts_query: crate::query::ContactQuery,
 }
 
 pub fn run_menu(tokens: &TokenSet, session: &AppSession, options: AppMenuOptions) -> Result<()> {
     loop {
-        let service = ContactService::new(&options.app_api_base_url)?;
+        let service = ContactService::new(&options.app_api_base_url)?
+            .with_query(options.contacts_query.clone())?;
         let initial_page = run_main_menu_tui_with_contacts_loader(
             &session.account_name,
             &session.app_description,
@@ -50,7 +52,8 @@ pub fn browse_contacts(
     session: &AppSession,
     options: AppMenuOptions,
 ) -> Result<Option<ContactRow>> {
-    let service = ContactService::new(&options.app_api_base_url)?;
+    let service = ContactService::new(&options.app_api_base_url)?
+        .with_query(options.contacts_query.clone())?;
     let initial_page = service.list_contacts(
         tokens,
         session,
@@ -67,7 +70,8 @@ fn browse_contacts_from_page(
     options: AppMenuOptions,
     initial_page: crate::contacts::ContactsPage,
 ) -> Result<Option<ContactRow>> {
-    let service = ContactService::new(&options.app_api_base_url)?;
+    let service = ContactService::new(&options.app_api_base_url)?
+        .with_query(options.contacts_query.clone())?;
 
     run_contacts_browser_tui(
         initial_page,

@@ -48,6 +48,21 @@ Open the saved-session contacts browser:
 cargo run -- contacts
 ```
 
+Search and filters run on Gecko and remain active when changing pages:
+
+```sh
+cargo run -- contacts --search 'example.test' --sort created-desc
+cargo run -- contacts --where '28:empty' --label-id 9 --created-after 2026-01-01 --plain
+cargo run -- filters list
+cargo run -- contacts --saved-filter 12 --json
+```
+
+`--where FIELD_ID:OP[:VALUE]` supports `eq`, `ne`, `contains`, `gt`, `lt`, `empty` and `not-empty`. Use the actual contact field ID. Repeat conditions or label IDs to require all of them. Values are strings or numbers (quote inside the argument to keep numeric-looking text as text). Boolean comparisons and equality/inequality with zero or empty text are rejected because Gecko cannot evaluate them as stated; decimal equality is encoded as text. An unknown label makes the combined search match no contacts. Missing-value operators take no value. Dates accept RFC3339 or `YYYY-MM-DD` at midnight UTC; `--created-after` is inclusive and `--created-before` exclusive.
+
+Saved filters combine with keyword search, but cannot combine with explicit field/label/date conditions because Gecko replaces the saved conditions in that combination. Unknown saved filter and field IDs fail before the contact search. `--sort` supports `id-asc` (default), `id-desc`, `name-asc`, `email-asc`, `created-asc`, `created-desc`, and `updated-desc`, with an ID tie-breaker. Page sizes are 1–500.
+
+`--plain` prints the table; `--json` prints only a structured contacts/pagination object, with the same privacy masking as the TUI. Saved-filter discovery prints JSON. Both commands use the saved app token/session and accept their existing path overrides.
+
 Controls:
 
 - Move selection: `up`/`down` or `j`/`k`
@@ -157,3 +172,5 @@ cargo test
 ```
 
 Scenario tests cover deterministic output, exact duplicate/missing counts, fixture validation, real HTTP payload shapes, duplicate-preserving updates, profile selection, required-field preflight, checkpoint recovery and reruns against local mock HTTP servers. They require loopback sockets and do not contact a live Gecko environment.
+
+The local delivery plan and review record are in [docs/implementation-plan.md](docs/implementation-plan.md) and [docs/review-log.md](docs/review-log.md).

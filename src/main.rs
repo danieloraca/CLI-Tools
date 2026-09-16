@@ -2,10 +2,13 @@ mod api;
 mod app;
 mod app_identity;
 mod auth;
+mod catalog;
 mod contacts;
+mod gecko;
 mod profiles;
 mod progress;
 mod prompt;
+mod query;
 mod scenarios;
 mod session;
 mod storage;
@@ -27,6 +30,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Discover saved contact filters.
+    Filters {
+        #[command(subcommand)]
+        command: catalog::CatalogCommand,
+    },
     /// Generate and apply repeatable Gecko development scenarios.
     Scenario {
         #[command(subcommand)]
@@ -175,6 +183,11 @@ enum Commands {
         /// Print a plain table instead of opening the TUI.
         #[arg(long)]
         plain: bool,
+        /// Print structured JSON instead of opening the TUI.
+        #[arg(long, conflicts_with = "plain")]
+        json: bool,
+        #[command(flatten)]
+        query: query::ContactQuery,
     },
 }
 
@@ -183,6 +196,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Filters { command } => catalog::run_filters(command)?,
         Commands::Scenario { command } => scenarios::run(command)?,
         Commands::Login {
             email,
@@ -260,6 +274,7 @@ fn main() -> Result<()> {
                             app_api_base_url: required_app_api_base_url(app_api_base_url)?,
                             contacts_page: 1,
                             contacts_per_page: 15,
+                            contacts_query: Default::default(),
                         },
                     )?;
                 }
@@ -313,6 +328,7 @@ fn main() -> Result<()> {
                         app_api_base_url: required_app_api_base_url(app_api_base_url)?,
                         contacts_page: 1,
                         contacts_per_page: 15,
+                        contacts_query: Default::default(),
                     },
                 )?;
             }
@@ -325,6 +341,8 @@ fn main() -> Result<()> {
             page,
             per_page,
             plain,
+            json,
+            query,
         } => {
             let token_file = app_token_file
                 .or(token_file)
@@ -337,10 +355,16 @@ fn main() -> Result<()> {
             let session = session::load_session(&session_file)?;
             let app_api_base_url = required_app_api_base_url(app_api_base_url)?;
 
-            if plain {
+            query.validate()?;
+            if plain || json {
                 let contacts = contacts::ContactService::new(&app_api_base_url)?
+                    .with_query(query)?
                     .list_contacts(&tokens, &session, page, per_page)?;
-                println!("{}", contacts::render_contacts_page(&contacts));
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&contacts)?);
+                } else {
+                    println!("{}", contacts::render_contacts_page(&contacts));
+                }
             } else if let Some(contact) = app::browse_contacts(
                 &tokens,
                 &session,
@@ -348,6 +372,7 @@ fn main() -> Result<()> {
                     app_api_base_url,
                     contacts_page: page,
                     contacts_per_page: per_page,
+                    contacts_query: query,
                 },
             )? {
                 println!(
