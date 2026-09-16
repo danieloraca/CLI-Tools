@@ -322,10 +322,10 @@ fn challenge_string(response: &AuthResponse, key: &str) -> Option<String> {
 }
 
 fn claim_code_from_redirect_url(redirect_url: &str) -> Result<String> {
-    if let Ok(url) = reqwest::Url::parse(redirect_url) {
-        if let Some((_, code)) = url.query_pairs().find(|(key, _)| key == "code") {
-            return Ok(code.into_owned());
-        }
+    if let Ok(url) = reqwest::Url::parse(redirect_url)
+        && let Some((_, code)) = url.query_pairs().find(|(key, _)| key == "code")
+    {
+        return Ok(code.into_owned());
     }
 
     let query = redirect_url
@@ -347,13 +347,8 @@ pub fn persist_tokens(tokens: &TokenSet, token_file: Option<&Path>) -> Result<()
         return Ok(());
     };
 
-    if let Some(parent) = token_file.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
     let data = serde_json::to_vec_pretty(tokens)?;
-    fs::write(token_file, data)
+    crate::storage::write_private_atomic(token_file, &data)
         .with_context(|| format!("failed to write tokens to {}", token_file.display()))?;
 
     Ok(())

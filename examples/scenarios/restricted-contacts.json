@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "name": "restricted-contacts",
+  "seed": 42,
+  "fields": [
+    {
+      "key": "name",
+      "label": "Full name",
+      "type": "name"
+    },
+    {
+      "key": "email",
+      "label": "Email address",
+      "type": "email"
+    },
+    {
+      "key": "course",
+      "label": "course",
+      "type": "text"
+    },
+    {
+      "key": "cohort",
+      "label": "cohort",
+      "type": "number"
+    },
+    {
+      "key": "access_notes",
+      "label": "access notes",
+      "type": "textarea"
+    }
+  ],
+  "contacts": [
+    {
+      "key": "contact_00001",
+      "fields": {
+        "access_notes": "Development contact 00001\nPrefers email. Accessibility notes: a quiet room.",
+        "cohort": 2024,
+        "course": "History",
+        "email": "restricted-contacts.42.00001@example.test",
+        "name": {
+          "first_name": "Daniel",
+          "last_name": "O'Neill"
+        }
+      }
+    },
+    {
+      "key": "contact_00002",
+      "fields": {
+        "access_notes": "Development contact 00002\nPrefers a campus visit. Accessibility notes: a quiet room.",
+        "cohort": 2026,
+        "course": "History",
+        "email": "restricted-contacts.42.00002@example.test",
+        "name": {
+          "first_name": "Noor",
+          "last_name": "Al-Hassan"
+        }
+      }
+    },
+    {
+      "key": "contact_00003",
+      "fields": {
+        "access_notes": "Development contact 00003\nPrefers a campus visit. Accessibility notes: step-free access.",
+        "cohort": 2026,
+        "course": "Mathematics",
+        "email": "restricted-contacts.42.00003@example.test",
+        "name": {
+          "first_name": "Alex",
+          "last_name": "Taylor"
+        }
+      }
+    },
+    {
+      "key": "contact_00004",
+      "fields": {
+        "access_notes": "Development contact 00004\nPrefers email. Accessibility notes: step-free access.",
+        "cohort": 2027,
+        "course": "Law",
+        "email": "restricted-contacts.42.00001@example.test",
+        "name": {
+          "first_name": "Sofía",
+          "last_name": "García"
+        }
+      }
+    },
+    {
+      "key": "contact_00005",
+      "fields": {
+        "access_notes": "Development contact 00005\nPrefers a campus visit. Accessibility notes: step-free access.",
+        "cohort": 2027,
+        "course": "History",
+        "email": "restricted-contacts.42.00002@example.test",
+        "name": {
+          "first_name": "Amara",
+          "last_name": "Okafor"
+        }
+      }
+    },
+    {
+      "key": "contact_00006",
+      "fields": {
+        "access_notes": "Development contact 00006\nPrefers a campus visit. Accessibility notes: none requested.",
+        "cohort": 2025,
+        "course": "History",
+        "email": null,
+        "name": {
+          "first_name": "Ava",
+          "last_name": "Smith-Jones"
+        }
+      }
+    }
+  ],
+  "groups": [
+    {
+      "key": "read_only",
+      "name": "restricted-contacts Read only",
+      "permissions": [
+        "contacts_view"
+      ]
+    }
+  ]
+}

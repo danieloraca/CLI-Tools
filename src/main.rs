@@ -1,11 +1,16 @@
 mod api;
 mod app;
+mod app_identity;
 mod auth;
 mod contacts;
 mod profiles;
 mod progress;
 mod prompt;
+mod scenarios;
 mod session;
+mod storage;
+#[cfg(test)]
+mod test_support;
 mod tui;
 
 use anyhow::{Context, Result};
@@ -22,6 +27,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Generate and apply repeatable Gecko development scenarios.
+    Scenario {
+        #[command(subcommand)]
+        command: scenarios::ScenarioCommand,
+    },
     /// Log in with the account API used by the web app.
     Login {
         /// Email address to log in with.
@@ -173,6 +183,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Scenario { command } => scenarios::run(command)?,
         Commands::Login {
             email,
             password,

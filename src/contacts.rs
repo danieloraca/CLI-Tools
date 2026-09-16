@@ -2,11 +2,12 @@ use crate::api::normalize_base_url;
 use crate::auth::TokenSet;
 use crate::session::AppSession;
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone};
+use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
 use reqwest::{blocking::Client, header::HeaderMap};
 use serde_json::Value;
 
-const CONTACT_RFIELDS: &str = "field_1,field_2,field_3,field_4,field_5,field_6";
+const CONTACT_RFIELDS: &str =
+    "id,full_name,email,created_at,field_1,field_2,field_3,field_4,field_5,field_6";
 const LABEL_RFIELDS: &str = "color,name";
 const HEADER_PREFIX: &str = concat!("Ge", "cko");
 
@@ -34,6 +35,8 @@ impl ContactService {
         page: u32,
         per_page: u32,
     ) -> Result<ContactsPage> {
+        crate::app_identity::validate_token_profile(tokens, session)?;
+        let columns = self.list_columns(tokens, session)?;
         let response = self
             .http
             .get(format!("{}/contacts", self.base_url))
@@ -53,6 +56,9 @@ impl ContactService {
 
         let status = response.status();
         let headers = response.headers().clone();
+        if status.is_success() {
+            crate::app_identity::validate_account(&headers, &session.account_id)?;
+        }
         let payload: Value = response.json().with_context(|| {
             format!("contacts API returned non-JSON response with status {status}")
         })?;
@@ -64,7 +70,59 @@ impl ContactService {
         }
 
         let pagination = ContactsPagination::from_response(&headers, &payload, page, per_page);
-        parse_contacts_page_with_pagination(payload, pagination)
+        parse_contacts_page_with_pagination(payload, pagination, &columns)
+    }
+
+    fn list_columns(&self, tokens: &TokenSet, session: &AppSession) -> Result<ContactColumns> {
+        let mut fields = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        // Read all contact metadata: privacy flags still apply when a field is omitted from
+        // the configured list, and the server may cap per_page below the requested value.
+        for page in 1..=1000 {
+            let response = self
+                .http
+                .get(format!("{}/fields", self.base_url))
+                .header("Accept", "application/json")
+                .header(format!("{HEADER_PREFIX}-Account"), &session.account_id)
+                .header(format!("{HEADER_PREFIX}-User"), &session.user_id)
+                .bearer_auth(&tokens.access_token)
+                .query(&[
+                    ("field_type", "contact".to_string()),
+                    ("per_page", "100".to_string()),
+                    ("page", page.to_string()),
+                ])
+                .send()
+                .context("contact field metadata request failed")?;
+            let status = response.status();
+            if status.is_success() {
+                crate::app_identity::validate_account(response.headers(), &session.account_id)?;
+            }
+            let payload: Value = response.json().with_context(|| {
+                format!("contact field metadata returned non-JSON with status {status}")
+            })?;
+            if !status.is_success() {
+                return Err(api_error(&payload)
+                    .unwrap_or_else(|| anyhow!("contact field metadata returned {status}")));
+            }
+            let items = payload
+                .get("fields")
+                .or_else(|| payload.get("data"))
+                .unwrap_or(&payload)
+                .as_array()
+                .context("contact field metadata did not include a fields array")?;
+            if items.is_empty() {
+                return Ok(ContactColumns::from_metadata(&fields));
+            }
+            for item in items {
+                let id = item
+                    .get("id")
+                    .and_then(display_value)
+                    .context("contact field metadata omitted an ID")?;
+                anyhow::ensure!(seen.insert(id), "contact field pagination repeated an ID");
+                fields.push(item.clone());
+            }
+        }
+        anyhow::bail!("contact field pagination exceeded 1000 pages")
     }
 
     pub fn contact_detail(
@@ -73,6 +131,7 @@ impl ContactService {
         session: &AppSession,
         contact_id: &str,
     ) -> Result<ContactDetail> {
+        crate::app_identity::validate_token_profile(tokens, session)?;
         let response = self
             .http
             .get(format!("{}/contacts/{}", self.base_url, contact_id))
@@ -91,6 +150,9 @@ impl ContactService {
             .context("contact detail API request failed")?;
 
         let status = response.status();
+        if status.is_success() {
+            crate::app_identity::validate_account(response.headers(), &session.account_id)?;
+        }
         let payload: Value = response.json().with_context(|| {
             format!("contact detail API returned non-JSON response with status {status}")
         })?;
@@ -141,6 +203,51 @@ pub struct ContactFieldValue {
     pub value: String,
 }
 
+#[derive(Default)]
+struct ContactColumns {
+    phone: Option<String>,
+    last_chat_message: Option<String>,
+    mask_name: bool,
+    mask_email: bool,
+    mask_created: bool,
+    mask_phone: bool,
+    mask_chat: bool,
+}
+
+impl ContactColumns {
+    fn from_metadata(fields: &[Value]) -> Self {
+        let column = |kind: &str| {
+            fields
+                .iter()
+                .filter(|field| field["type"] == kind)
+                .filter_map(|field| {
+                    value_u32(field, &["contact_list_view"]).map(|position| (position, field))
+                })
+                .filter(|(position, _)| (1..=6).contains(position))
+                .min_by_key(|(position, _)| *position)
+        };
+        // Without metadata we cannot establish that a stable property is safe to display.
+        let sensitive = |kind: &str| {
+            let mut matching = fields
+                .iter()
+                .filter(|field| field["type"] == kind)
+                .peekable();
+            matching.peek().is_none() || matching.any(|field| truthy(field.get("is_sensitive")))
+        };
+        let phone = column("tel");
+        let chat = column("last_chat_message");
+        Self {
+            phone: phone.map(|(position, _)| format!("field_{position}")),
+            last_chat_message: chat.map(|(position, _)| format!("field_{position}")),
+            mask_name: sensitive("name"),
+            mask_email: sensitive("email"),
+            mask_created: sensitive("contact_created"),
+            mask_phone: phone.is_none_or(|(_, field)| truthy(field.get("is_sensitive"))),
+            mask_chat: chat.is_none_or(|(_, field)| truthy(field.get("is_sensitive"))),
+        }
+    }
+}
+
 #[cfg(test)]
 pub fn parse_contacts_page(payload: Value, page: u32, per_page: u32) -> Result<ContactsPage> {
     parse_contacts_page_with_pagination(
@@ -151,18 +258,20 @@ pub fn parse_contacts_page(payload: Value, page: u32, per_page: u32) -> Result<C
             total_results: None,
             total_pages: None,
         },
+        &ContactColumns::default(),
     )
 }
 
-pub fn parse_contacts_page_with_pagination(
+fn parse_contacts_page_with_pagination(
     payload: Value,
     pagination: ContactsPagination,
+    columns: &ContactColumns,
 ) -> Result<ContactsPage> {
     let contacts = contact_items(&payload)
         .context("contacts API response did not include a contacts array")?
         .iter()
         .filter_map(Value::as_object)
-        .map(ContactRow::from_object)
+        .map(|object| ContactRow::from_object(object, columns))
         .collect();
 
     Ok(ContactsPage {
@@ -343,21 +452,41 @@ fn value_u64(value: &Value, keys: &[&str]) -> Option<u64> {
 }
 
 impl ContactRow {
-    fn from_object(object: &serde_json::Map<String, Value>) -> Self {
-        Self {
+    fn from_object(object: &serde_json::Map<String, Value>, columns: &ContactColumns) -> Self {
+        let mut contact = Self {
             id: first_string(object, &["id", "contact_id", "ContactId"]).unwrap_or_default(),
-            full_name: first_string(object, &["full_name", "field_1", "name"]).unwrap_or_default(),
-            email: first_string(object, &["email", "field_2"]).unwrap_or_default(),
-            last_chat_message: first_string(object, &["last_chat_message", "field_3"])
+            full_name: first_string(object, &["full_name", "name"]).unwrap_or_default(),
+            email: first_string(object, &["email"]).unwrap_or_default(),
+            last_chat_message: columns
+                .last_chat_message
+                .as_deref()
+                .and_then(|column| first_string(object, &[column]))
+                .or_else(|| first_string(object, &["last_chat_message"]))
                 .map(|value| format_datetime(&value))
                 .unwrap_or_default(),
-            created_at: first_string(object, &["created_at", "field_4"])
+            created_at: first_string(object, &["created_at"])
                 .map(|value| format_datetime(&value))
                 .unwrap_or_default(),
-            phone: first_string(object, &["telephone", "phone", "field_5", "field_6"])
+            phone: columns
+                .phone
+                .as_deref()
+                .and_then(|column| first_string(object, &[column]))
+                .or_else(|| first_string(object, &["telephone", "phone"]))
                 .unwrap_or_default(),
             labels: parse_labels(object.get("labels")),
+        };
+        for (value, sensitive) in [
+            (&mut contact.full_name, columns.mask_name),
+            (&mut contact.email, columns.mask_email),
+            (&mut contact.created_at, columns.mask_created),
+            (&mut contact.phone, columns.mask_phone),
+            (&mut contact.last_chat_message, columns.mask_chat),
+        ] {
+            if sensitive && !value.is_empty() {
+                *value = "************".into();
+            }
         }
+        contact
     }
 }
 
@@ -566,7 +695,7 @@ fn parse_datetime(value: &str) -> Option<NaiveDateTime> {
     }
 
     if let Ok(datetime) = DateTime::parse_from_rfc3339(value) {
-        return Some(datetime.naive_local());
+        return Some(datetime.naive_utc());
     }
 
     for format in [
@@ -596,10 +725,9 @@ fn parse_epoch_datetime(value: &str) -> Option<NaiveDateTime> {
         _ => return None,
     };
 
-    Local
-        .timestamp_opt(seconds, 0)
+    Utc.timestamp_opt(seconds, 0)
         .single()
-        .map(|value| value.naive_local())
+        .map(|value| value.naive_utc())
 }
 
 fn ordinal_day(day: u32) -> String {
@@ -638,11 +766,11 @@ mod tests {
                 "data": [
                     {
                         "id": 7,
-                        "field_1": "Peter Tester",
-                        "field_2": "peter@example.com",
-                        "field_3": "2026-04-30T11:56:00Z",
-                        "field_4": "2026-04-30T11:44:00Z",
-                        "field_5": "+4412345",
+                        "full_name": "Peter Tester",
+                        "email": "peter@example.com",
+                        "last_chat_message": "2026-04-30T11:56:00Z",
+                        "created_at": "2026-04-30T11:44:00Z",
+                        "phone": "+4412345",
                         "labels": [{ "name": "bigbang" }]
                     }
                 ]
@@ -745,7 +873,7 @@ mod tests {
 
         assert_eq!(detail.id, "444621");
         assert_eq!(detail.fields[0].label, "Contact created");
-        assert_eq!(detail.fields[0].value, "30th Apr 2026 at 11:58");
+        assert_eq!(detail.fields[0].value, "30th Apr 2026 at 10:58");
         assert_eq!(detail.fields[1].label, "Email address (s)");
         assert_eq!(detail.fields[1].value, "************");
         assert_eq!(detail.fields[2].value, "peter nother");
@@ -863,8 +991,8 @@ mod tests {
 
     #[test]
     fn formats_epoch_timestamps() {
-        assert_eq!(format_datetime("1777546721"), "30th Apr 2026 at 11:58");
-        assert_eq!(format_datetime("1777546721000"), "30th Apr 2026 at 11:58");
+        assert_eq!(format_datetime("1777546721"), "30th Apr 2026 at 10:58");
+        assert_eq!(format_datetime("1777546721000"), "30th Apr 2026 at 10:58");
     }
 
     #[test]
@@ -873,5 +1001,187 @@ mod tests {
             format_datetime("30th Apr 2026 at 11:58"),
             "30th Apr 2026 at 11:58"
         );
+    }
+
+    #[test]
+    fn equivalent_timestamps_display_the_same_utc_instant() {
+        for value in [
+            "1777546721",
+            "1777546721000",
+            "2026-04-30T10:58:41Z",
+            "2026-04-30T11:58:41+01:00",
+            "2026-04-30T05:58:41-05:00",
+            "2026-04-30 10:58:41",
+        ] {
+            assert_eq!(format_datetime(value), "30th Apr 2026 at 10:58", "{value}");
+        }
+    }
+
+    fn test_session() -> AppSession {
+        AppSession {
+            profile_id: "p-1".into(),
+            account_id: "281".into(),
+            user_id: "2260".into(),
+            account_name: "Development".into(),
+            app_description: "Forms".into(),
+            redirect_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn loads_stable_contact_columns_and_resolves_configured_phone_and_chat_fields() {
+        let server = crate::test_support::Server::new(vec![
+            (
+                200,
+                json!({"fields": [
+                    {"id": 1, "type": "email", "contact_list_view": 1}, {"id": 2, "type": "name", "contact_list_view": 2},
+                    {"id": 3, "type": "tel", "contact_list_view": "3"}, {"id": 4, "type": "text", "contact_list_view": 4},
+                    {"id": 5, "type": "last_chat_message", "contact_list_view": 5}, {"id": 6, "type": "contact_created", "contact_list_view": null},
+                ]}),
+            ),
+            (200, json!({"data": []})),
+            (
+                200,
+                json!({"contacts": [{"id": 7, "full_name": "Peter Tester", "email": "peter@example.test", "created_at": "2026-04-30T10:58:41Z",
+                "field_1": "peter@example.test", "field_2": "Peter Tester", "field_3": "+4412345", "field_4": "History", "field_5": "2026-05-01T11:00:00+01:00"}]}),
+            ),
+        ]);
+        let service = ContactService::new(&server.url).unwrap();
+        let page = service
+            .list_contacts(
+                &crate::test_support::app_tokens("p-1"),
+                &test_session(),
+                1,
+                15,
+            )
+            .unwrap();
+        assert_eq!(page.contacts[0].full_name, "Peter Tester");
+        assert_eq!(page.contacts[0].email, "peter@example.test");
+        assert_eq!(page.contacts[0].phone, "+4412345");
+        assert_eq!(page.contacts[0].created_at, "30th Apr 2026 at 10:58");
+        assert_eq!(page.contacts[0].last_chat_message, "1st May 2026 at 10:00");
+        let requests = server.finish();
+        assert!(requests[0].line.starts_with("GET /fields?"));
+        assert!(requests[1].line.contains("page=2"));
+        let request_url = reqwest::Url::parse(&format!(
+            "http://example.test{}",
+            requests[2].line.split_whitespace().nth(1).unwrap()
+        ))
+        .unwrap();
+        let rfields = request_url
+            .query_pairs()
+            .find(|(key, _)| key == "contact_rfields")
+            .unwrap()
+            .1;
+        for stable in ["id", "full_name", "email", "created_at"] {
+            assert!(rfields.split(',').any(|field| field == stable));
+        }
+    }
+
+    #[test]
+    fn unconfigured_list_fields_are_never_guessed() {
+        let page = parse_contacts_page(json!([{"id": 7, "field_1": "Programme", "field_2": "2026", "field_3": "History", "field_4": "1234", "field_5": "Notes"}]), 1, 15).unwrap();
+        let contact = &page.contacts[0];
+        assert!(
+            contact.full_name.is_empty()
+                && contact.email.is_empty()
+                && contact.phone.is_empty()
+                && contact.created_at.is_empty()
+                && contact.last_chat_message.is_empty()
+        );
+    }
+
+    #[test]
+    fn contact_reads_reject_mismatched_profiles_and_accounts() {
+        let service = ContactService::new("http://127.0.0.1:1").unwrap();
+        let error = service
+            .list_contacts(
+                &crate::test_support::app_tokens("other"),
+                &test_session(),
+                1,
+                15,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("does not match saved profile"));
+        for account in [None, Some("999")] {
+            let server = crate::test_support::Server::with_account(
+                vec![(200, json!({"contact": {"id": 7, "current_values": []}}))],
+                account,
+            );
+            let service = ContactService::new(&server.url).unwrap();
+            assert!(
+                service
+                    .contact_detail(
+                        &crate::test_support::app_tokens("p-1"),
+                        &test_session(),
+                        "7"
+                    )
+                    .is_err()
+            );
+            assert_eq!(server.finish().len(), 1);
+        }
+    }
+
+    #[test]
+    fn masks_sensitive_fields_even_when_omitted_from_the_configured_list() {
+        let server = crate::test_support::Server::new(vec![
+            (
+                200,
+                json!({"data": [
+                    {"id": 1, "type": "tel", "contact_list_view": 1, "is_sensitive": true},
+                    {"id": 2, "type": "last_chat_message", "contact_list_view": 2, "is_sensitive": 1},
+                ]}),
+            ),
+            (
+                200,
+                json!({"data": [
+                    {"id": 3, "type": "name", "contact_list_view": null, "is_sensitive": true},
+                    {"id": 4, "type": "email", "contact_list_view": null, "is_sensitive": "1"},
+                    {"id": 5, "type": "contact_created", "contact_list_view": null, "is_sensitive": 1},
+                ]}),
+            ),
+            (200, json!({"data": []})),
+            (
+                200,
+                json!({"contacts": [{"id": 7, "full_name": "Private Name", "email": "private@example.test", "created_at": "2026-04-30T10:58:41Z", "field_1": "+4412345", "field_2": "2026-05-01T10:00:00Z"}]}),
+            ),
+        ]);
+        let page = ContactService::new(&server.url)
+            .unwrap()
+            .list_contacts(
+                &crate::test_support::app_tokens("p-1"),
+                &test_session(),
+                1,
+                15,
+            )
+            .unwrap();
+        let contact = &page.contacts[0];
+        for value in [
+            &contact.full_name,
+            &contact.email,
+            &contact.created_at,
+            &contact.phone,
+            &contact.last_chat_message,
+        ] {
+            assert_eq!(value, "************");
+        }
+        let table = render_contacts_page(&page);
+        assert!(
+            !table.contains("Private Name")
+                && !table.contains("private@example.test")
+                && !table.contains("+4412345")
+        );
+        let requests = server.finish();
+        assert_eq!(requests.len(), 4);
+        assert!(requests[1].line.contains("page=2"));
+    }
+
+    #[test]
+    fn missing_privacy_metadata_masks_stable_properties() {
+        let columns = ContactColumns::from_metadata(&[]);
+        let row = ContactRow::from_object(json!({"id": 7, "full_name": "Private Name", "email": "private@example.test", "created_at": "2026-04-30T10:58:41Z"}).as_object().unwrap(), &columns);
+        assert_eq!(row.full_name, "************");
+        assert_eq!(row.email, "************");
+        assert_eq!(row.created_at, "************");
     }
 }

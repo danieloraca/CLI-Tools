@@ -18,13 +18,8 @@ pub fn save_session(session: &AppSession, session_file: Option<&Path>) -> Result
         return Ok(());
     };
 
-    if let Some(parent) = session_file.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
     let data = serde_json::to_vec_pretty(session)?;
-    fs::write(session_file, data)
+    crate::storage::write_private_atomic(session_file, &data)
         .with_context(|| format!("failed to write session to {}", session_file.display()))?;
 
     Ok(())

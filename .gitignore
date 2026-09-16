@@ -2,3 +2,6 @@
 .idea
 Cargo.lock
 .env
+*.apply-state.json
+*.apply-state.json.lock
+*.apply-state.json.tmp

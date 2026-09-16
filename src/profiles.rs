@@ -315,7 +315,8 @@ fn select_choice<'a>(
 fn id_matches(value: &Value, expected: &str) -> bool {
     match value {
         Value::String(value) => value == expected,
-        _ => value.to_string() == expected,
+        Value::Number(value) => value.to_string() == expected,
+        _ => false,
     }
 }
 

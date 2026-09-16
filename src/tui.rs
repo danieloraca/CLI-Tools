@@ -1,4 +1,4 @@
-use crate::contacts::{ContactDetail, ContactFieldValue, ContactRow, ContactsPage};
+use crate::contacts::{ContactDetail, ContactRow, ContactsPage};
 use crate::profiles::ProfileChoice;
 use anyhow::Result;
 use crossterm::{
@@ -604,10 +604,16 @@ const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ContactsView {
     List,
-    Detail {
-        contact: ContactRow,
-        detail: ContactDetail,
-    },
+    Detail(Box<ContactOverview>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContactOverview {
+    contact: ContactRow,
+    detail: ContactDetail,
+    scroll: u16,
+    max_scroll: u16,
+    viewport_height: u16,
 }
 
 impl ContactsTui {
@@ -682,7 +688,13 @@ impl ContactsTui {
     }
 
     pub fn show_detail(&mut self, contact: ContactRow, detail: ContactDetail) {
-        self.view = ContactsView::Detail { contact, detail };
+        self.view = ContactsView::Detail(Box::new(ContactOverview {
+            contact,
+            detail,
+            scroll: 0,
+            max_scroll: 0,
+            viewport_height: 0,
+        }));
         self.clear_status();
     }
 
@@ -692,10 +704,15 @@ impl ContactsTui {
     }
 
     pub fn is_detail_view(&self) -> bool {
-        matches!(self.view, ContactsView::Detail { .. })
+        matches!(self.view, ContactsView::Detail(_))
     }
 
     pub fn next(&mut self) {
+        if let ContactsView::Detail(overview) = &mut self.view {
+            overview.scroll = overview.scroll.saturating_add(1).min(overview.max_scroll);
+            return;
+        }
+
         let len = self.page.contacts.len();
         if len == 0 {
             self.state.select(None);
@@ -710,6 +727,11 @@ impl ContactsTui {
     }
 
     pub fn previous(&mut self) {
+        if let ContactsView::Detail(overview) = &mut self.view {
+            overview.scroll = overview.scroll.saturating_sub(1);
+            return;
+        }
+
         let len = self.page.contacts.len();
         if len == 0 {
             self.state.select(None);
@@ -721,6 +743,26 @@ impl ContactsTui {
             Some(index) => index - 1,
         };
         self.state.select(Some(index));
+    }
+
+    fn scroll_detail_page(&mut self, forward: bool) {
+        if let ContactsView::Detail(overview) = &mut self.view {
+            let amount = overview.viewport_height.max(1);
+            overview.scroll = if forward {
+                overview
+                    .scroll
+                    .saturating_add(amount)
+                    .min(overview.max_scroll)
+            } else {
+                overview.scroll.saturating_sub(amount)
+            };
+        }
+    }
+
+    fn scroll_detail_to_end(&mut self, end: bool) {
+        if let ContactsView::Detail(overview) = &mut self.view {
+            overview.scroll = if end { overview.max_scroll } else { 0 };
+        }
     }
 }
 
@@ -778,6 +820,10 @@ where
                 }
                 KeyCode::Char('j') | KeyCode::Down => app.next(),
                 KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                KeyCode::PageDown => app.scroll_detail_page(true),
+                KeyCode::PageUp => app.scroll_detail_page(false),
+                KeyCode::Home => app.scroll_detail_to_end(false),
+                KeyCode::End => app.scroll_detail_to_end(true),
                 KeyCode::Char('h') | KeyCode::Char('p') | KeyCode::Left => {
                     if app.is_detail_view() {
                         app.show_list();
@@ -791,26 +837,26 @@ where
                         )?;
                     }
                 }
-                KeyCode::Char('l') | KeyCode::Char('n') | KeyCode::Right => {
-                    if !app.is_detail_view() && app.can_go_next() {
-                        load_contacts_page(
-                            terminal,
-                            app,
-                            app.page.pagination.page.saturating_add(1),
-                            app.page.pagination.per_page,
-                            load_page,
-                        )?;
-                    }
+                KeyCode::Char('l') | KeyCode::Char('n') | KeyCode::Right
+                    if !app.is_detail_view() && app.can_go_next() =>
+                {
+                    load_contacts_page(
+                        terminal,
+                        app,
+                        app.page.pagination.page.saturating_add(1),
+                        app.page.pagination.per_page,
+                        load_page,
+                    )?;
                 }
-                KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') => {
-                    if !app.is_detail_view() {
-                        load_contacts_page(terminal, app, 1, app.next_per_page(), load_page)?;
-                    }
+                KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']')
+                    if !app.is_detail_view() =>
+                {
+                    load_contacts_page(terminal, app, 1, app.next_per_page(), load_page)?;
                 }
-                KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[') => {
-                    if !app.is_detail_view() {
-                        load_contacts_page(terminal, app, 1, app.previous_per_page(), load_page)?;
-                    }
+                KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[')
+                    if !app.is_detail_view() =>
+                {
+                    load_contacts_page(terminal, app, 1, app.previous_per_page(), load_page)?;
                 }
                 KeyCode::Char('1') if !app.is_detail_view() => {
                     load_contacts_page(terminal, app, 1, 15, load_page)?
@@ -821,11 +867,9 @@ where
                 KeyCode::Char('3') if !app.is_detail_view() => {
                     load_contacts_page(terminal, app, 1, 50, load_page)?
                 }
-                KeyCode::Enter => {
-                    if !app.is_detail_view() {
-                        if let Some(contact) = app.selected_contact().cloned() {
-                            load_contact_detail(terminal, app, contact, load_detail)?;
-                        }
+                KeyCode::Enter if !app.is_detail_view() => {
+                    if let Some(contact) = app.selected_contact().cloned() {
+                        load_contact_detail(terminal, app, contact, load_detail)?;
                     }
                 }
                 _ => {}
@@ -891,8 +935,8 @@ where
 }
 
 fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
-    if let ContactsView::Detail { contact, detail } = &app.view {
-        draw_contact_overview(frame, app, contact, detail);
+    if let ContactsView::Detail(overview) = &mut app.view {
+        draw_contact_overview(frame, overview, app.status.as_deref());
         return;
     }
 
@@ -942,7 +986,7 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
         ],
     )
     .header(
-        Row::new(vec!["Full name", "Email", "Created", "Labels"])
+        Row::new(vec!["Full name", "Email", "Created (UTC)", "Labels"])
             .style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -974,20 +1018,19 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
     );
 }
 
-fn draw_contact_overview(
-    frame: &mut Frame,
-    app: &ContactsTui,
-    contact: &ContactRow,
-    detail: &ContactDetail,
-) {
+fn draw_contact_overview(frame: &mut Frame, overview: &mut ContactOverview, status: Option<&str>) {
     let area = frame.area();
-    let shell = Block::default()
+    let compact = area.width < 100 || area.height < 24;
+    let mut shell = Block::default()
         .title(Span::styled(
             " Contact Overview ",
             Style::default().fg(Color::White),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(TURQUOISE));
+    if compact {
+        shell = shell.title_bottom(" ↑/↓ j/k scroll | PgUp/PgDn | b back | q/esc quit ");
+    }
     frame.render_widget(shell, area);
 
     let inner = area.inner(Margin {
@@ -997,13 +1040,18 @@ fn draw_contact_overview(
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Length(3),
-            Constraint::Min(10),
+            Constraint::Length(if inner.height >= 12 { 4 } else { 0 }),
+            Constraint::Length(if compact { 0 } else { 3 }),
+            Constraint::Min(1),
         ])
         .split(inner);
-    frame.render_widget(contact_header(contact), vertical[0]);
+    frame.render_widget(contact_header(&overview.contact), vertical[0]);
     frame.render_widget(contact_tabs(), vertical[1]);
+
+    if compact {
+        draw_contact_profile_fields(frame, overview, vertical[2]);
+        return;
+    }
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
@@ -1011,12 +1059,45 @@ fn draw_contact_overview(
         .split(vertical[2]);
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(8)])
+        .constraints([Constraint::Min(3), Constraint::Length(10)])
         .split(main[1]);
 
-    frame.render_widget(contact_profile_fields(detail), main[0]);
+    draw_contact_profile_fields(frame, overview, main[0]);
     frame.render_widget(contact_activity_placeholder(), right[0]);
-    frame.render_widget(contact_detail_legend(app.status.as_deref()), right[1]);
+    frame.render_widget(contact_detail_legend(status), right[1]);
+}
+
+fn draw_contact_profile_fields(
+    frame: &mut Frame,
+    overview: &mut ContactOverview,
+    area: ratatui::layout::Rect,
+) {
+    let block = Block::default()
+        .title(format!(" Contact #{} ", overview.detail.id))
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    let fields = contact_profile_fields(&overview.detail);
+    let line_count = fields.line_count(inner.width);
+    overview.viewport_height = inner.height;
+    overview.max_scroll = if inner.is_empty() {
+        0
+    } else {
+        line_count
+            .saturating_sub(usize::from(inner.height))
+            .try_into()
+            .unwrap_or(u16::MAX)
+    };
+    overview.scroll = overview.scroll.min(overview.max_scroll);
+
+    let block = block.title_bottom(format!(
+        " Lines {}–{}/{} ",
+        usize::from(overview.scroll)
+            .saturating_add(1)
+            .min(line_count),
+        (usize::from(overview.scroll) + usize::from(inner.height)).min(line_count),
+        line_count,
+    ));
+    frame.render_widget(fields.block(block).scroll((overview.scroll, 0)), area);
 }
 
 fn contact_header(contact: &ContactRow) -> Paragraph<'static> {
@@ -1069,33 +1150,20 @@ fn contact_profile_fields(detail: &ContactDetail) -> Paragraph<'static> {
     ))];
     lines.push(Line::from(""));
 
-    for pair in detail.fields.chunks(2).take(12) {
-        lines.push(profile_field_line(&pair[0], pair.get(1)));
+    for field in &detail.fields {
+        lines.push(Line::from(Span::styled(
+            field.label.clone(),
+            Style::default().fg(TURQUOISE).add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(
+            non_empty(&field.value, "-")
+                .lines()
+                .map(|line| Line::from(line.to_string())),
+        );
         lines.push(Line::from(""));
     }
 
-    Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(format!(" Contact #{} ", detail.id))
-                .borders(Borders::ALL),
-        )
-        .wrap(Wrap { trim: true })
-}
-
-fn profile_field_line(
-    left: &ContactFieldValue,
-    right: Option<&ContactFieldValue>,
-) -> Line<'static> {
-    let left = format!("{}: {}", left.label, non_empty(&left.value, "-"));
-    let right = right
-        .map(|field| format!("{}: {}", field.label, non_empty(&field.value, "-")))
-        .unwrap_or_default();
-
-    Line::from(vec![
-        Span::styled(format!("{left:<46}"), Style::default().fg(Color::White)),
-        Span::styled(right, Style::default().fg(Color::White)),
-    ])
+    Paragraph::new(lines).wrap(Wrap { trim: false })
 }
 
 fn contact_activity_placeholder() -> Paragraph<'static> {
@@ -1118,6 +1186,9 @@ fn contact_detail_legend(status: Option<&str>) -> Paragraph<'static> {
     let status = status.unwrap_or("Viewing contact overview.");
 
     Paragraph::new(vec![
+        legend_line("Scroll", "up/down or j/k"),
+        legend_line("Page", "PageUp/PageDown"),
+        legend_line("Jump", "Home/End"),
         legend_line("Back", "b, left, or backspace"),
         legend_line("Quit", "q or esc"),
         Line::from(""),
@@ -1249,7 +1320,7 @@ fn contact_details(contact: Option<&ContactRow>) -> Paragraph<'static> {
             detail_line("ID", &contact.id),
             detail_line("Email", &contact.email),
             detail_line("Phone", &contact.phone),
-            detail_line("Created", &contact.created_at),
+            detail_line("Created (UTC)", &contact.created_at),
             detail_line("Last chat", &contact.last_chat_message),
             detail_line("Labels", &contact.labels.join(", ")),
         ]
@@ -1285,7 +1356,29 @@ fn non_empty(value: &str, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contacts::ContactsPagination;
+    use crate::contacts::{ContactFieldValue, ContactsPagination};
+    use ratatui::backend::TestBackend;
+
+    fn render_contacts(app: &mut ContactsTui, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw_contacts(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn overview(app: &ContactsTui) -> &ContactOverview {
+        let ContactsView::Detail(overview) = &app.view else {
+            panic!("expected contact detail view");
+        };
+        overview
+    }
 
     fn contacts_page() -> ContactsPage {
         ContactsPage {
@@ -1447,5 +1540,126 @@ mod tests {
         assert_eq!(app.status.as_deref(), Some("/ Loading page 2..."));
         app.clear_status();
         assert_eq!(app.status, None);
+    }
+
+    #[test]
+    fn detail_scroll_reaches_fields_after_twenty_four_without_moving_list_selection() {
+        let mut app = ContactsTui::new(contacts_page());
+        app.next();
+        let contact = app.selected_contact().unwrap().clone();
+        let detail = ContactDetail {
+            id: contact.id.clone(),
+            fields: (1..=30)
+                .map(|index| ContactFieldValue {
+                    label: format!("Field {index:02}"),
+                    value: format!("value-{index:02}"),
+                })
+                .collect(),
+        };
+        app.show_detail(contact.clone(), detail.clone());
+
+        let initial = render_contacts(&mut app, 60, 12);
+        assert!(initial.contains("Field 01"));
+        assert!(!initial.contains("Field 30"));
+        assert!(initial.contains("j/k scroll"));
+
+        app.next();
+        assert_eq!(overview(&app).scroll, 1);
+        app.previous();
+        assert_eq!(overview(&app).scroll, 0);
+        app.scroll_detail_page(true);
+        assert_eq!(overview(&app).scroll, overview(&app).viewport_height);
+        app.scroll_detail_page(false);
+        assert_eq!(overview(&app).scroll, 0);
+        app.scroll_detail_to_end(true);
+
+        let last = render_contacts(&mut app, 60, 12);
+        assert!(last.contains("Field 30"), "{last}");
+        assert!(last.contains("value-30"), "{last}");
+        assert_eq!(app.selected_index(), Some(1));
+        let end = overview(&app).scroll;
+        app.next();
+        app.scroll_detail_page(true);
+        assert_eq!(overview(&app).scroll, end);
+
+        app.show_list();
+        assert!(!app.is_detail_view());
+        assert_eq!(app.selected_index(), Some(1));
+        app.show_detail(contact, detail);
+        assert_eq!(overview(&app).scroll, 0);
+    }
+
+    #[test]
+    fn detail_scroll_reaches_wrapped_and_multiline_values_on_short_terminals() {
+        let mut app = ContactsTui::new(contacts_page());
+        let contact = app.selected_contact().unwrap().clone();
+        app.show_detail(
+            contact,
+            ContactDetail {
+                id: "1".to_string(),
+                fields: vec![ContactFieldValue {
+                    label: "Notes".to_string(),
+                    value: format!(
+                        "FIRST LINE\n{} WRAPPED END\nLAST EXPLICIT LINE",
+                        "a long value with spaces ".repeat(30),
+                    ),
+                }],
+            },
+        );
+
+        let initial = render_contacts(&mut app, 40, 8);
+        assert!(initial.contains("FIRST LINE"), "{initial}");
+        assert!(!initial.contains("LAST EXPLICIT LINE"));
+        let max_scroll = overview(&app).max_scroll;
+        assert!(
+            max_scroll > 20,
+            "long values must include their wrapped rows"
+        );
+
+        let mut rendered = initial;
+        for _ in 0..max_scroll {
+            app.next();
+            rendered.push_str(&render_contacts(&mut app, 40, 8));
+        }
+        assert!(rendered.contains("WRAPPED END"));
+        assert!(rendered.contains("LAST EXPLICIT LINE"));
+        assert_eq!(overview(&app).scroll, max_scroll);
+        assert_eq!(app.selected_index(), Some(0));
+
+        app.scroll_detail_to_end(false);
+        app.previous();
+        app.scroll_detail_page(false);
+        assert_eq!(overview(&app).scroll, 0);
+    }
+
+    #[test]
+    fn detail_scroll_clamps_after_terminal_resize() {
+        let mut app = ContactsTui::new(contacts_page());
+        let contact = app.selected_contact().unwrap().clone();
+        app.show_detail(
+            contact,
+            ContactDetail {
+                id: "1".to_string(),
+                fields: vec![ContactFieldValue {
+                    label: "Notes".to_string(),
+                    value: "a long value ".repeat(25),
+                }],
+            },
+        );
+
+        render_contacts(&mut app, 30, 8);
+        app.scroll_detail_to_end(true);
+        assert!(overview(&app).scroll > 0);
+
+        let resized = render_contacts(&mut app, 120, 50);
+        assert!(resized.contains("Notes"));
+        assert_eq!(overview(&app).max_scroll, 0);
+        assert_eq!(overview(&app).scroll, 0);
+        app.next();
+        assert_eq!(overview(&app).scroll, 0);
+
+        render_contacts(&mut app, 2, 2);
+        assert_eq!(overview(&app).max_scroll, 0);
+        assert_eq!(overview(&app).scroll, 0);
     }
 }
